@@ -1,0 +1,19 @@
+[20250819]
+ 
+This script was used to double check if there is any unwanted cell in the library.
+ 
+# Script Usage :
+The script will check all libraries under current folder.
+User need to provide a cell list that need to be check.
+ 
+# How to use :
+source ../RUN/check_customer_cell.csh ../RUN/customer_cell_all
+ 
+# Cell list format :
+AIOI21_NOM_D3_H110PNPN_L3_P44_UL
+AIOI21_NOM_D4_H110PNPN_L3_P44_UL
+ANTENNA_MGOFBIMA_H110PNPN_L3_P44_UL
+AOAI211_NOM_D4_H110PNPN_L3_P44_UL
+ 
+ 
+ 

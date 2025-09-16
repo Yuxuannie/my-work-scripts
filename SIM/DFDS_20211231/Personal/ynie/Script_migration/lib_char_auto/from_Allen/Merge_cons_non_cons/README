@@ -1,0 +1,9 @@
+[20250710]
+This flow is used to merge the non_cons and cons lib.
+Previos was used on mb type lib.
+ 
+# Script Usage :
+1. Modified the content in run_merge.csh
+2. The result will be under current folder and rename as %ccs_lib%.
+ 
+ 

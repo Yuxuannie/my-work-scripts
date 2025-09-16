@@ -1,0 +1,48 @@
+[20250716]
+ 
+This flow is used to transfer the .LDB format from arc-base to cell-base
+(Usually means that from char_trio_xxx.tcl format to char.tcl format.)
+ 
+For example, if we char with char_trio.tcl:
+ 
+# .LDB would be like :
+tcbn02p_bwph130nppnl3p48cpd_base_elvt_c241028trio_groupLPE_ssgnp_cworst_T_m25c.ldb.gz/
+ 
+# And in the .LDB would be like:
+checkpointLdbs/
+client_logs/
+.html/
+.liberate_env_file*
+.liberate_launch_file*
+preprocessing/
+ssgnp_0p500v_m25c_cworst_T/
+ssgnp_0p800v_m25c_cworst_T/
+.status/
+vectorLdbs/
+ 
+There are two PVT in one LDB, this was the new format but cannot handle by CCS lib2lib flow.
+ 
+# With using this script, we can transfer it back to the format below:
+tcbn02p_bwph130nppnl3p48cpd_base_elvt_c241028ssgnp_0p500v_m25c_cworst_T.ldb.gz/
+tcbn02p_bwph130nppnl3p48cpd_base_elvt_c241028ssgnp_0p800v_m25c_cworst_T.ldb.gz/
+ 
+# And in the .LDB would be like:
+bundle.1/
+bundle.2/
+...
+ 
+ 
+# Script Usage
+1. Modify the kit_template.txt
+    #library_name             -> library_name
+    #lvf_corner               = n
+    #liberate_tool_flow_setup = MnPVT
+    #altos_location           -> The working folder that we put the Char folder
+ 
+2. Provide the char_trio_xxx.tcl and need to only keep the PVT we want in the tcl
+3. Run the script and the perl script will take the path in char_trio_xxx.tcl (write_ldb path)
+4. The transferred .LDB would be in the write_ldb path mentioned in step 3
+5. Further using this .LDB for CCS lib2lib
+
+ 
+ 

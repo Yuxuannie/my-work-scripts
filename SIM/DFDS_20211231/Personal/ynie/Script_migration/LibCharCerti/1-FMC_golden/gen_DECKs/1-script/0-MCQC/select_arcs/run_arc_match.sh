@@ -1,0 +1,72 @@
+#!/bin/bash
+ 
+# Default paths and operation mode
+DEFAULT_FOLDER_PATH="/SIM/DFDS_20211231/Personal/ynie/3-LibCharCerti/2024/N2P/1-FMC_Golden/gen_DECKs/ssgnp_0p495v_m40c_DECKS/hold/DECKS/"
+DEFAULT_TARGET_DECK_PATH="/SIM/DFDS_20211231/Personal/ynie/3-LibCharCerti/2024/N2P/1-FMC_Golden/gen_DECKs/ssgnp_0p495v_m40c_DECKS/hold/DECKS/"
+DEFAULT_OPERATION_MODE="pattern_to_list"  # Options: list_to_pattern, pattern_to_list, all
+ 
+# Assigning arguments or using defaults
+FOLDER_PATH="${1:-$DEFAULT_FOLDER_PATH}"
+TARGET_DECK_PATH="${2:-$DEFAULT_TARGET_DECK_PATH}"
+OPERATION_MODE="${3:-$DEFAULT_OPERATION_MODE}"
+ 
+# Arc patterns
+ARC_PATTERNS=(
+    "SDFQNT*BWP130HPNPN3P48CPD_SE_fall_CP_rise_D_notSI"
+    "CKLNQO*BWP130HPNPN3P48CPD_TE_fall_CP_rise_notE"
+    "SDFQSX*BWP130HPNPN3P48CPD_SI_rise_CP_rise_D_SE"
+    "SDFQNT*BWP130HPNPN3P48CPD_D_rise_CP_rise_notSE_SI"
+    "SDFQNS*BWP130HPNPN3P48CPD_SI_fall_CP_rise_D_SE"
+    "SDFNQS*BWP130HPNPN3P48CPD_SI_fall_CPN_fall_D_SE"
+    "SDFKRP*BWP130HPNPN3P48CPD_C_rise_CP_rise_D_notSE_SI"
+    "SDFKRP*BWP130HPNPN3P48CPD_SE_rise_CP_rise_C_D_SI"
+    "SDFKRP*BWP130HPNPN3P48CPD_SE_fall_CP_rise_C_D_SI"
+    "SDFQSX*BWP130HPNPN3P48CPD_SE_fall_CP_rise_D_notSI"
+    "SDFNQS*BWP130HPNPN3P48CPD_D_rise_CPN_fall_notSE_SI"
+    "SDFQNS*BWP130HPNPN3P48CPD_D_rise_CP_rise_notSE_SI"
+    "SDFNQS*BWP130HPNPN3P48CPD_SI_rise_CPN_fall_D_SE"
+    "CKLHQO*BWP130HPNPN3P48CPD_E_fall_CPN_fall_notTE"
+    "SDFQNT*BWP130HPNPN3P48CPD_D_fall_CP_rise_notSE_SI"
+    "SDFQNS*BWP130HPNPN3P48CPD_SE_rise_CP_rise_D_notSI"
+    "SDFKRP*BWP130HPNPN3P48CPD_D_rise_CP_rise_notC_notSE_SI"
+    "SDFKRP*BWP130HPNPN3P48CPD_D_fall_CP_rise_notC_notSE_SI"
+    "CKLHQO*BWP130HPNPN3P48CPD_E_rise_CPN_fall_notTE"
+    "SDFQNT*BWP130HPNPN3P48CPD_SI_fall_CP_rise_D_SE"
+    "SDFQSX*BWP130HPNPN3P48CPD_D_rise_CP_rise_notSE_SI"
+    "CKLHQO*BWP130HPNPN3P48CPD_TE_fall_CPN_fall_notE"
+    "SDFKRP*BWP130HPNPN3P48CPD_C_fall_CP_rise_D_notSE_SI"
+    "SDFSRP*BWP130HPNPN3P48CPD_SE_rise_CP_rise_notCD_D_SDN_notSI"
+    "SDFSRP*BWP130HPNPN3P48CPD_SE_fall_CP_rise_notCD_D_SDN_notSI"
+    "CKLHQO*BWP130HPNPN3P48CPD_TE_rise_CPN_fall_notE"
+    "SDFSRP*BWP130HPNPN3P48CPD_SI_rise_CP_rise_notCD_D_SDN_SE"
+    "SDFKRP*BWP130HPNPN3P48CPD_SI_fall_CP_rise_C_D_SE"
+    "SDFQNS*BWP130HPNPN3P48CPD_SE_fall_CP_rise_D_notSI"
+    "SDFQNS*BWP130HPNPN3P48CPD_SI_rise_CP_rise_D_SE"
+    "SDFNQS*BWP130HPNPN3P48CPD_D_fall_CPN_fall_notSE_SI"
+    "SDFQSX*BWP130HPNPN3P48CPD_SE_rise_CP_rise_D_notSI"
+    "SDFQNT*BWP130HPNPN3P48CPD_SE_rise_CP_rise_D_notSI"
+    "SDFSRP*BWP130HPNPN3P48CPD_D_rise_CP_rise_notCD_SDN_notSE_SI"
+    "CKLNQO*BWP130HPNPN3P48CPD_E_fall_CP_rise_notTE"
+    "CKLNQO*BWP130HPNPN3P48CPD_E_rise_CP_rise_notTE"
+    "SDFQNS*BWP130HPNPN3P48CPD_D_fall_CP_rise_notSE_SI"
+    "SDFSRP*BWP130HPNPN3P48CPD_SI_fall_CP_rise_notCD_D_SDN_SE"
+    "SDFSRP*BWP130HPNPN3P48CPD_D_fall_CP_rise_notCD_SDN_notSE_SI"
+    "SDFQSX*BWP130HPNPN3P48CPD_D_fall_CP_rise_notSE_SI"
+    "SDFNQS*BWP130HPNPN3P48CPD_SE_fall_CPN_fall_D_notSI"
+    "CKLNQO*BWP130HPNPN3P48CPD_TE_rise_CP_rise_notE"
+    "SDFNQS*BWP130HPNPN3P48CPD_SE_rise_CPN_fall_D_notSI"
+    "SDFKRP*BWP130HPNPN3P48CPD_SI_rise_CP_rise_C_D_SE"
+    "SDFQSX*BWP130HPNPN3P48CPD_SI_fall_CP_rise_D_SE"
+    "SDFQNT*BWP130HPNPN3P48CPD_SI_rise_CP_rise_D_SE"
+)
+ 
+# Convert the array to a space-separated string
+ARC_PATTERNS_STR="${ARC_PATTERNS[*]}"
+ 
+# Log file path
+LOG_FILE="arc_match.log"
+ 
+# Run the Python script with specified arguments
+/usr/local/python/3.9.10/bin/python3 /SIM/DFDS_20211231/Personal/ynie/3-LibCharCerti/2024/N2P/1-FMC_Golden/gen_DECKs/1-script/select_arcs/arc_match.py "$FOLDER_PATH" "$TARGET_DECK_PATH" "$OPERATION_MODE" "$ARC_PATTERNS_STR" > "$LOG_FILE" 2>&1
+ 
+ 

@@ -1,0 +1,43 @@
+# lib_to_db Package
+ 
+This package provides scripts to convert Liberty (.lib) files to compiled database (.db) format using Synopsys Liberty Compiler (lc_shell).
+ 
+## Files in the Package
+ 
+-Nominal Usage:
+            - `lib_to_db.sh`: Shell script to invoke lc_shell and run the Tcl script.
+            - `lib_to_db.tcl`: Main Tcl script that processes the libraries.
+            - `config.tcl`: Configuration file for specifying libraries and paths.
+ 
+-Sens Usage:
+           
+            - `run_lc.csh`: Shell script to invoke lc_shell and run the Tcl script.
+            - `lc_check.tcl`: Main Tcl script that processes the libraries.
+            - `config.tcl`: Configuration file for specifying libraries and paths.
+ 
+-Conflicting Object Name:
+            - `run_all_libs.tcl`: (Special case) Tcl script for processing libraries with conflicting official names.
+            - need to change the lib_to_db.tcl and lc_check.tcl accordingly to support only one lib for each run.
+ 
+## General Purpose Usage
+ 
+            - ./lib_to_db.sh
+            -./run_lc.csh
+           
+## Special Case Usage
+            - /usr/local/bin/tclsh run_all_libs.tcl
+ 
+### Setup
+ 
+1. Ensure all script files are in the same directory.
+2. Update `config.tcl` with your library path and list of libraries:
+ 
+   ```tcl
+   set lib_path "/path/to/your/lib/directory"
+   set lib_list {
+       "library1.lib"
+       "library2.lib"
+       "library3.lib"
+       # Add more libraries as needed
+   }
+ 

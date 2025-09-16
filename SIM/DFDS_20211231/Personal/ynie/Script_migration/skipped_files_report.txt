@@ -1,0 +1,8 @@
+=== SKIPPED FILES REPORT Wed Sep  3 06:15:51 CST 2025 ===
+=== Files skipped due to binary/encrypted content ===
+ 
+/SIM/DFDS_20211231/Personal/ynie/Script_migration/LDBX/.get_cell_attr.py.swp - Vim swap file, version 7.4 (12288 bytes)
+/SIM/DFDS_20211231/Personal/ynie/Script_migration/LDBX/0_get_attr_cell/.get_cell_attr.py.swp - Vim swap file, version 7.4 (12288 bytes)
+/SIM/DFDS_20211231/Personal/ynie/Script_migration/LibCharCerti/1-FMC_golden/gen_DECKs/1-script/2-data_process/Combine_Lib_and_FMC/.Combine_FMC_and_CDNS_lib.py.swp - Vim swap file, version 7.4 (16384 bytes)
+/SIM/DFDS_20211231/Personal/ynie/Script_migration/LibCharCerti/1-FMC_golden/gen_DECKs/1-script/2-data_process/Validate_CI/.ci_validation.py.swp - Vim swap file, version 7.4 (16384 bytes)
+ 

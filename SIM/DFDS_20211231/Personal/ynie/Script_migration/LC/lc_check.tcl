@@ -1,0 +1,21 @@
+set_host_options -max_cores 8
+set lc_enable_10nm_mode true
+set lc_check_lib_keep_line_number true
+set lc_enable_encrypted_read_lib true
+set lc_use_file_name_as_read_lib_identifier true
+set lc_check_lib_include_all_group_attributes true
+set lc_usm_without_nominal true
+set lc_usm_without_nominal_constraint true
+ 
+#read_lib /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Liberate/01_sens_lib_lccheck/no_nominal_table/tcbn02p_bwph130nppnl3p48cpd_base_elvt_c241028ffgnp_0p800v_m25c_cbest.cons_sens.lib > /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Liberate/01_sens_lib_lccheck/no_nominal_table/read_sdk_tcbn02p_bwph130nppnl3p48cpd_base_elvt_c241028ffgnp_0p800v_m25c_cbest.cons_sens.lib.log
+#read_lib /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Liberate/01_sens_lib_lccheck/no_nominal_table/tcbn02p_bwph130nppnl3p48cpd_base_elvt_c241028ffgnp_0p800v_m25c_cbest.non_cons_sens.lib > /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Liberate/01_sens_lib_lccheck/no_nominal_table/read_sdk_tcbn02p_bwph130nppnl3p48cpd_base_elvt_c241028ffgnp_0p800v_m25c_cbest.non_cons_sens.lib.log
+#read_lib /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Liberate/01_sens_lib_lccheck/no_nominal_table/tcbn02p_bwph130pnpnl3p48cpd_mb_lvt_c241028ffgnp_0p800v_m25c_cbest.cons_sens.lib > /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Liberate/01_sens_lib_lccheck/no_nominal_table/read_sdk_tcbn02p_bwph130pnpnl3p48cpd_mb_lvt_c241028ffgnp_0p800v_m25c_cbest.cons_sens.lib.log
+#read_lib /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Liberate/01_sens_lib_lccheck/no_nominal_table/tcbn02p_bwph130pnpnl3p48cpd_mb_lvt_c241028ffgnp_0p800v_m25c_cbest.non_cons_sens.lib > /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Liberate/01_sens_lib_lccheck/no_nominal_table/read_sdk_tcbn02p_bwph130pnpnl3p48cpd_mb_lvt_c241028ffgnp_0p800v_m25c_cbest.non_cons_sens.lib.log
+read_lib /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Primelib/1-baseline_updated_0624_2025/to_TSMC_20250619_nom_ocv_sens_package/tcbn02_bwph130nppnl3p48cpd_base_elvt_ssgnp_0p800v_m25c_cworst_t_hm_lvf_p_ccs/liberty.lib > /SIM/DFDS_20211231/Personal/ynie/0-lib_char/2025/External/sens_char/Primelib/1-baseline_updated_0624_2025/to_TSMC_20250619_nom_ocv_sens_package/tcbn02_bwph130nppnl3p48cpd_base_elvt_ssgnp_0p800v_m25c_cworst_t_hm_lvf_p_ccs/lc_check.log
+ 
+ 
+#set libname [get_object_name [get_libs]]
+#write_lib $libname -output tcbn03ep_bwp143mh<th>l3p48cpd_base_<vt>_c230705ssgnp_0p530v_m25c_cworst_T_sdk_092424.db
+ 
+exit
+ 

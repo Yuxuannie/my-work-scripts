@@ -1,0 +1,5 @@
+*.log
+*.pyc
+__pycache__/
+user_config.yaml
+ 

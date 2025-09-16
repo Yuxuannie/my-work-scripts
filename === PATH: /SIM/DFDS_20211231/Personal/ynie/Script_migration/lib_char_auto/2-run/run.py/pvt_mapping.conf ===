@@ -1,0 +1,24 @@
+# PVT Corner Mapping Configuration
+# Format: PVT_CORNER,DIRECTORY_PATH
+# Users can comment/uncomment lines to include/exclude specific mappings
+# Working directory will automatically be: BASE_PATH/PVT_CORNER
+ 
+# Device 828 mappings - Format: PVT_CORNER,DIRECTORY_PATH
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh117l3p48cpd_base_lvt_100a
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh117l3p48cpd_base_svt_100a
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh169l3p48cpd_base_lvtll_100a
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh286l3p48cpd_base_lvt_100a
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh286l3p48cpd_base_svt_100a
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh117l3p48cpd_base_lvtll_100a
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh169l3p48cpd_base_lvt_100a
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh169l3p48cpd_base_svt_100a
+ssgnp_0p54v_m40c_cworst_CCworst_T,tcbn03p_bwp143mh286l3p48cpd_base_lvtll_100a
+ 
+# Other voltage corners (add remaining mappings here)
+# ttg_0p800v_25c_typical,tcbn02_bwph130pnpnl3p48cpd_base_ulvt_c230828_094a
+# ...
+ 
+# Additional note: Users can add new mappings following the same format
+# Example: PVT_CORNER,BASE_DIRECTORY
+# Working directory will be automatically calculated as: BASE_PATH/PVT_CORNER
+ 
