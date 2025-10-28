@@ -1,6 +1,0 @@
-#library_name           = %library_name%
-#lvf_corner             = n
-#liberate_tool_flow_setup = MnPVT
-#altos_location         = /FSIM/PPA_C651_chamber/DFSD/Personal/ylliuzx/20250620_SDK_Char/CCS_Postprocess/
- 
- 

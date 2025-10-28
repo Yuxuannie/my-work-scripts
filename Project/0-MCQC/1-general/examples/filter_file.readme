@@ -1,0 +1,16 @@
+The following fields are required (case in-sensitive):
+    Cell
+    Arc Type
+    Pin
+    Pin Transition
+    Rel Pin
+    Rel Pin Tran
+    When
+    Point
+ 
+The user can add any number of fields (columns) to the filter file
+ 
+If the above fields are repeated in the header, the FIRST INSTANCE
+    of that field is determined to be the column, and this
+    column is extracted for the arc filter
+ 

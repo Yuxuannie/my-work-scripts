@@ -1,0 +1,27 @@
+# This script acts as the globals file that is read in by the Python file
+# It sets all of the options using the keyword 'set_var *' where * has the syntax '<var_name> <var_value>'
+# Enclose all option values in double quotes (")
+# Variables with the name 'list' in them should have values separated usings whitespaces (if multiple values are present)
+# Use ';' for in-line comments
+ 
+# The path to the SPICE deck templates
+set_var template_deck_path          "/proj/DMKD2/Personal/rahulk/tool_development/lvf_qa_flow_v2/LVF_QA_templates/SPICE_Templates"
+ 
+# Input options that depend on the QA
+set_var root_output_path            "/proj/DMKD2/Personal/rahulk/tool_development/lvf_qa_flow_v2/test/base_8lvt_ssgnp_0p510v_m25c/run1/DECKS"
+set_var template_file               "/proj/DMKD2/Projects/Libraries/lib_kits/N07/c160602_050a_r1/base/8lvt/Template/tcbn07_bwph240l8p57pd_base_lvt_c160602ssgnp_0p510v_m25c_cworst_T.template.tcl"
+set_var vdd_value                   "0.510"
+set_var temperature                 "-25"
+set_var root_netlist_path           "/proj/DMKD2/Projects/Libraries/lib_kits/N07/c160602_050a_r1/base/8lvt/Netlist/LPE_cworst_T_m25c"
+set_var include_file                "/aushome/rahulk/Database/Include_Files/cln7_1d8_sp_v0d1_3p1_for_C651_ssgnp.inc"
+set_var waveform_file               "/proj/DMKD2/Projects/Scripts/hspice/std_wv.spi"
+set_var table_points_list           "(3,3)"
+set_var qa_template_file            "/proj/DMKD2/Personal/rahulk/tool_development/lvf_qa_flow_v2/test/base_8lvt_ssgnp_0p510v_m25c/run1/base_8lvt_ssgnp_0p510v_m25c.template.qa"
+ 
+# Default options that can be overwritten by the user
+set_var cell_pattern_list           "*D1B*"
+set_var valid_arc_types_list        "hold removal"
+set_var max_num_when                "1"
+set_var pushout_per                 "0.4"
+set_var pushout_dir                 "POSITIVE"
+ 

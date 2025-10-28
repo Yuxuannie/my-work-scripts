@@ -1,0 +1,361 @@
+import sys
+ 
+def getFileLines(input_file):
+    with open(input_file, 'r') as f:
+        file_lines = f.readlines()
+    return file_lines
+ 
+ 
+def writeFile(file_buffer, output_file):
+    with open(output_file, 'w') as f:
+        f.write(''.join(file_buffer))
+ 
+ 
+def getDontTouchPins(template_deck):
+    template_deck_lines = getFileLines(template_deck)
+    dt_line_index = 1
+    dt_line = template_deck_lines[dt_line_index]
+ 
+    dt_pins_str = dt_line.strip().split('DONT_TOUCH_PINS')[1]
+    dt_pins_list = [x.strip() for x in dt_pins_str.split(',')]
+ 
+    return dt_pins_list
+ 
+ 
+def getNominalSpiceDeckBuffer(template_deck, input_options):
+    """
+    This function creates a SPICE deck buffer (list of strings that can be written to
+    a file) for a uniquely defined table point
+ 
+    Args:
+        template_deck (str): The path to the template deck
+        input_options (dict): Dictionary of options for the SPICE deck
+ 
+    input_options required fields:
+        HEADER_INFO (str):
+            The string that is set as the header of the SPICE deck
+        CELL_NAME (str):
+            The name of the cell
+        REL_PIN (str):
+            The name of the related pin
+        CONSTR_PIN (str):
+            The name of the constrained pin
+        OUTPUT_PINS (list):
+            A list of the output pins of the cell
+        PROBE_PIN_i (str):
+            The name of probe pin i where i = 1, 2, ..., N
+        WHEN (str):
+            The when condition in logical format (e.g., !SE&SI)
+        OUTPUT_LOAD (str):
+            The output load containing units (e.g., 0.00117p)
+        TEMPLATE_PINLIST (str):
+            The list of pins from the define_cell block of the template.tcl file
+        MAX_SLEW (str):
+            The maximum slew of the corner containing units (e.g., 2.5478n)
+        NETLIST_PINS (str):
+            The list of pins from the LPE netlist of the current cell
+        CONSTR_PIN_SLEW (str):
+            The slew for the constrained pin containing units (e.g., 2.5478n)
+        REL_PIN_SLEW (str):
+            The slew for the related pin containing units (e.g., 1.2739n)
+        VDD_VALUE (str):
+            The VDD value for the current corner (e.g., 0.510)
+        TEMPERATURE (str):
+            The temperature for the current corner (e.g., -25)
+        WAVEFORM_FILE (str):
+            The path to the waveform file to use
+        INCLUDE_FILE (str):
+            The path to the model include file to use
+        NETLIST_PATH (str):
+            The path to the LPE netlist to use
+        PUSHOUT_PER (str):
+            The pushout percentage to use (e.g., 0.4)
+        PUSHOUT_DIR (str):
+            The pushout direction to use (e.g., POSITIVE)
+        SIDE_PIN_STATES (list((str,str)))
+            The side pins specified by the user in a specific state e.g. ('CP', 'high')
+ 
+    Returns:
+        write_list (list): The SPICE deck buffer that can be written
+ 
+    """
+    template_deck_lines = getFileLines(template_deck)
+    output_load_header = '* Output Load'
+    when_condition_header = '* Pin definitions'
+    voltages_header = '* Voltage'
+    write_list = list()
+    for template_line in template_deck_lines:
+        if '$' in template_line:
+            filled_line = fillTemplateLine(template_line, input_options)
+            write_list.append(filled_line)
+ 
+        elif output_load_header in template_line:
+            write_list.append(template_line)
+            output_load_line = getOutputLoadLines(input_options)
+            write_list.append(output_load_line)
+ 
+        elif voltages_header in template_line:
+            write_list.append(template_line)
+            extra_power_pins_lines = getExtraPowerPinsLines(input_options)
+            write_list.append(extra_power_pins_lines)
+ 
+        elif when_condition_header in template_line:
+            write_list.append(template_line)
+            when_cond_line, when_pins = getWhenConditionLines(input_options)
+            write_list.append(when_cond_line)
+            unspecified_pins_lines = getUnspecifiedPinsLines(when_pins, input_options)
+            write_list.append(unspecified_pins_lines)
+            pins_fixed_state_lines = getUserFixedStatePinsLines(input_options)
+            write_list.append(pins_fixed_state_lines)
+ 
+        else:
+            write_list.append(template_line)
+    return write_list
+ 
+ 
+def getExtraPowerPinsLines(input_options):
+    template_deck_powerpins = ["VDD", "VSS", "VPP", "VBB"]
+    new_power_pin_list = list()
+    for cell_pin in input_options['NETLIST_PINS'].split():
+        if not cell_pin in input_options['TEMPLATE_PINLIST'].split():
+            if not cell_pin in template_deck_powerpins:
+                new_power_pin_list.append(cell_pin)
+ 
+    write_list = list()
+    for power_pin in new_power_pin_list:
+        write_list.append("V%s %s 0 'vdd_value'" % (power_pin, power_pin))
+    write_line = '\n'.join(write_list) + '\n'
+    return write_line
+ 
+ 
+def getWhenConditionLines(input_options):
+    when_cond = input_options['WHEN']
+    dont_touch_pins = input_options['DONT_TOUCH_PINS']
+ 
+    if when_cond == "NO_CONDITION":
+        write_line = "* No Condition\n"
+        when_pins = []
+    else:
+        when_cond_tuple = parseLogicalWhenCondition(when_cond)
+        when_pins = [x[0] for x in when_cond_tuple]
+ 
+        write_list = list()
+        for item in when_cond_tuple:
+            if item[0] in dont_touch_pins:
+                continue
+            else:
+                if str(item[1]) == '0':
+                    value = 'vss_value'
+                else:
+                    value = 'vdd_value'
+                line = "V%s %s 0 '%s'" % (item[0], item[0], value)
+                write_list.append(line)
+        write_line = '\n'.join(write_list) + '\n'
+    return write_line, when_pins
+ 
+ 
+def parseLogicalWhenCondition(when_cond):
+    when_list = list()
+    when_info = when_cond.split('&')
+    for item in when_info:
+        if item[0] == '!':
+            value = 0
+            pin_name = item[1:]
+        else:
+            value = 1
+            pin_name = item
+        when_list.append((pin_name, value))
+    return when_list
+ 
+ 
+def getUnspecifiedPinsLines(when_pins, input_options):
+    pins_vals_tuples = getUnspecifiedPinAssignments(when_pins, input_options)
+    write_list = list()
+    write_list.append("\n* Unspecified pins")
+    for item in pins_vals_tuples:
+        if str(item[1]) == '0':
+            value = 'vss_value'
+        else:
+            value = 'vdd_value'
+        line = "V%s %s 0 '%s'" % (item[0], item[0], value)
+        write_list.append(line)
+    write_line = '\n'.join(write_list) + '\n\n'
+    return write_line
+ 
+def getUserFixedStatePinsLines(input_options):
+    pins_vals_tuples = input_options['SIDE_PIN_STATES']
+    if len(pins_vals_tuples)>0:
+        write_list = list()
+        write_list.append("\n* User specified fixed state pins")
+        for item in pins_vals_tuples:
+            if str(item[1]) == 'low':
+                value = 'vss_value'
+            else:
+                value = 'vdd_value'
+            line = "V%s %s 0 '%s'" % (item[0], item[0], value)
+            write_list.append(line)
+        write_line = '\n'.join(write_list) + '\n\n'
+        return write_line
+    else:
+        write_line = '\n'
+        return write_line
+ 
+ 
+def getUnspecifiedPinAssignments(when_pins, input_options):
+    pin_list = [x.strip() for x in input_options['TEMPLATE_PINLIST'].split()]
+    dont_touch_pins = input_options['DONT_TOUCH_PINS']
+    constr_pin = input_options['CONSTR_PIN']
+    rel_pin = input_options['REL_PIN']
+    output_pins = input_options['OUTPUT_PINS']
+    side_pin_states = input_options['SIDE_PIN_STATES']
+ 
+    pins_with_assignments = list()
+    for pin in pin_list:
+        if pin in dont_touch_pins:
+            continue
+        if pin in when_pins:
+            continue
+        if pin in output_pins:
+            continue
+        if pin == rel_pin:
+            continue
+        if pin == constr_pin:
+            continue
+        user_defined_side_pin = False
+        for i in range(len(side_pin_states)):
+            if pin == side_pin_states[i][0]:
+                user_defined_side_pin = True
+                break
+        if user_defined_side_pin == True:
+            continue
+ 
+        pins_with_assignments.append((pin, '1'))
+    return pins_with_assignments
+ 
+ 
+def getOutputLoadLines(input_options):
+    output_pin_list = input_options['OUTPUT_PINS']
+    dont_touch_pins = input_options['DONT_TOUCH_PINS']
+    write_list = list()
+    for pin in output_pin_list:
+        if pin in dont_touch_pins:
+            continue
+        line = "C%s %s 0 'cl'" % (pin, pin)
+        write_list.append(line)
+    write_line = '\n'.join(write_list) + '\n'
+    return write_line
+ 
+ 
+def splitDollarNames(template_line):
+    line_info = template_line.split('$')
+    var_name_list = list()
+    for item in line_info[1:]:
+        var_name = item.split()[0].strip("'").strip(")").strip("(")
+        var_name_list.append(var_name)
+ 
+    return var_name_list
+ 
+ 
+def fillTemplateLine(template_line, input_options):
+    var_names = splitDollarNames(template_line)
+    var_values = getDollarValues(var_names, input_options)
+    filled_line = fillValuesInLine(var_names, var_values, template_line) + '\n'
+ 
+    return filled_line
+ 
+ 
+def getDollarValues(var_names, input_options):
+    var_value_list = list()
+    for item in var_names:
+        var_value = getSingleFillValue(item, input_options)
+        var_value_list.append(var_value)
+    return var_value_list
+ 
+ 
+def fillValuesInLine(var_names, var_values, template_line):
+    filled_line = template_line.strip('\n')
+    for count in range(0, len(var_names)):
+        raw_name = var_names[count]
+        dollar_name = "$%s" % raw_name
+        dollar_value = var_values[count]
+        filled_line = filled_line.replace(dollar_name, dollar_value)
+    return filled_line
+ 
+ 
+def old_fillValuesInLine(unfilled_line, fill_value_list):
+    unfilled_line_info = unfilled_line.split('%s')
+    filled_line_list = list()
+    for count in range(0, len(unfilled_line_info)-1):
+        substr = unfilled_line_info[count]
+        filled_line_list.append(substr)
+        fill_value = fill_value_list[count]
+        filled_line_list.append(fill_value)
+    filled_line_list.append(unfilled_line_info[-1])
+ 
+    filled_line = ''.join(filled_line_list)
+    return filled_line
+ 
+ 
+def parseFillSpecs(fill_names, input_options):
+    fill_value_list = list()
+    # Math evaluation
+    if fill_names[0] == '[':
+        fill_value = evaluateMathFillValue(fill_names, input_options)
+        fill_value_list.append(fill_value)
+ 
+    # Multiple values
+    elif fill_names[0] == '(':
+        fill_value_list = getMultipleFillValues(fill_names, input_options)
+ 
+    # Single entry
+    else:
+        fill_value = getSingleFillValue(fill_names, input_options)
+        fill_value_list.append(fill_value)
+ 
+    return fill_value_list
+ 
+ 
+def evaluateMathFillValue(math_fill_func, input_options):
+    math_fill_info = math_fill_func[1:-1].split(' x ')
+    prod_list = list()
+    for item in math_fill_info:
+        try:
+            prod_list.append(float(item))
+        except ValueError:
+            variable_name = item
+            variable_value = getSingleFillValue(variable_name, input_options)
+            prod_list.append(float(variable_value))
+    math_fill_value = product(prod_list)
+    return str(math_fill_value)
+ 
+ 
+def product(my_iterable):
+    prod = 1
+    for item in my_iterable:
+        prod *= float(item)
+    return prod
+ 
+ 
+def getMultipleFillValues(fill_names, input_options):
+    fill_name_list = [x.strip() for x in fill_names[1:-1].split(',')]
+    fill_value_list = list()
+    for fill_name in fill_name_list:
+        if fill_name[0] == '[':
+            fill_value = evaluateMathFillValue(fill_name, input_options)
+        else:
+            fill_value = getSingleFillValue(fill_name, input_options)
+        fill_value_list.append(fill_value)
+    return fill_value_list
+ 
+ 
+def getSingleFillValue(fill_name, input_options):
+    if fill_name not in input_options:
+        print("ERROR: Tried to fill template with option %s but it doesn't exist." %
+              fill_name)
+        sys.exit(0)
+    else:
+        fill_value = input_options[fill_name]
+    return fill_value
+ 
+ 
+ 
