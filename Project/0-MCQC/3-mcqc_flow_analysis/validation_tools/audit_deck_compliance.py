@@ -39,19 +39,8 @@ except ImportError:
     YAML_AVAILABLE = False
     print("⚠️  PyYAML not available - YAML reports will be disabled")
 
-# Add the MCQC parsers to Python path
-MCQC_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(MCQC_ROOT / "2-flow"))
-
-try:
-    from charTemplateParser import ChartemplateParser
-    from chartcl_parser import ChartclParser
-    from globalsFileReader import GlobalsFileReader
-    PARSERS_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️  MCQC parsers not available: {e}")
-    print("⚠️  Continuing with basic file parsing...")
-    PARSERS_AVAILABLE = False
+# Note: Using robust file parsing instead of MCQC-specific parsers for broader compatibility
+PARSERS_AVAILABLE = False  # Always use basic parsing for reliability
 
 
 class InputTraceabilityEngine:
@@ -92,7 +81,8 @@ class InputTraceabilityEngine:
 
         return logger
 
-    def trace_arc_inputs(self, arc_folder: Path) -> Dict[str, Any]:
+    def trace_arc_inputs(self, arc_folder: Path, template_file: Optional[Path] = None,
+                         chartcl_file: Optional[Path] = None, globals_file: Optional[Path] = None) -> Dict[str, Any]:
         """
         Trace ALL inputs that contributed to this arc's deck generation.
 
@@ -115,21 +105,26 @@ class InputTraceabilityEngine:
             'python_signatures': []
         }
 
-        # Find and parse all input files
-        template_file = self._find_template_file(arc_folder)
-        chartcl_file = self._find_chartcl_file(arc_folder)
-        globals_files = self._find_globals_files(arc_folder)
+        # Use explicit files or find them in arc hierarchy
+        template_file_to_use = template_file or self._find_template_file(arc_folder)
+        chartcl_file_to_use = chartcl_file or self._find_chartcl_file(arc_folder)
+
+        # Handle globals files - use explicit file or find multiple in hierarchy
+        if globals_file:
+            globals_files = [globals_file] if globals_file.exists() else []
+        else:
+            globals_files = self._find_globals_files(arc_folder)
 
         # Parse each input source
-        if template_file:
-            traceability['input_sources']['template'] = self._parse_template_inputs(template_file)
+        if template_file_to_use and template_file_to_use.exists():
+            traceability['input_sources']['template'] = self._parse_template_inputs(template_file_to_use)
 
-        if chartcl_file:
-            traceability['input_sources']['chartcl'] = self._parse_chartcl_inputs(chartcl_file)
+        if chartcl_file_to_use and chartcl_file_to_use.exists():
+            traceability['input_sources']['chartcl'] = self._parse_chartcl_inputs(chartcl_file_to_use)
 
-        for globals_file in globals_files:
-            globals_key = f"globals_{globals_file.name}"
-            traceability['input_sources'][globals_key] = self._parse_globals_inputs(globals_file)
+        for globals_file_item in globals_files:
+            globals_key = f"globals_{globals_file_item.name}"
+            traceability['input_sources'][globals_key] = self._parse_globals_inputs(globals_file_item)
 
         # Analyze mc_sim.sp to identify output patterns
         mc_sim_file = arc_folder / "mc_sim.sp"
@@ -198,80 +193,41 @@ class InputTraceabilityEngine:
         return globals_files
 
     def _parse_template_inputs(self, template_file: Path) -> Dict[str, Any]:
-        """Parse template.tcl to extract all specifications."""
+        """Parse template.tcl to extract all specifications using robust file parsing."""
 
-        if PARSERS_AVAILABLE:
-            try:
-                parser = ChartemplateParser(str(template_file))
-                parsed_data = parser.parse()
-
-                return {
-                    'file_path': str(template_file),
-                    'parser_used': 'ChartemplateParser',
-                    'parsed_content': parsed_data,
-                    'raw_lines': self._extract_key_template_lines(template_file)
-                }
-            except Exception as e:
-                self.logger.warning(f"ChartemplateParser failed: {e}, falling back to basic parsing")
-
-        # Fallback to basic parsing
         return {
             'file_path': str(template_file),
-            'parser_used': 'basic_file_parsing',
+            'parser_used': 'robust_file_parsing',
             'raw_lines': self._extract_key_template_lines(template_file),
             'measurements_found': self._extract_template_measurements(template_file),
-            'arc_specifications': self._extract_arc_specs(template_file)
+            'arc_specifications': self._extract_arc_specs(template_file),
+            'tcl_variables': self._extract_tcl_variables(template_file),
+            'when_conditions': self._extract_when_conditions_from_template(template_file)
         }
 
     def _parse_chartcl_inputs(self, chartcl_file: Path) -> Dict[str, Any]:
-        """Parse chartcl.tcl to extract configuration settings."""
+        """Parse chartcl.tcl to extract configuration settings using robust file parsing."""
 
-        if PARSERS_AVAILABLE:
-            try:
-                parser = ChartclParser(str(chartcl_file))
-                parsed_data = parser.parse()
-
-                return {
-                    'file_path': str(chartcl_file),
-                    'parser_used': 'ChartclParser',
-                    'parsed_content': parsed_data,
-                    'raw_lines': self._extract_key_chartcl_lines(chartcl_file)
-                }
-            except Exception as e:
-                self.logger.warning(f"ChartclParser failed: {e}, falling back to basic parsing")
-
-        # Fallback to basic parsing
         return {
             'file_path': str(chartcl_file),
-            'parser_used': 'basic_file_parsing',
+            'parser_used': 'robust_file_parsing',
             'raw_lines': self._extract_key_chartcl_lines(chartcl_file),
             'measurements_config': self._extract_chartcl_measurements(chartcl_file),
-            'timing_config': self._extract_chartcl_timing(chartcl_file)
+            'timing_config': self._extract_chartcl_timing(chartcl_file),
+            'tcl_settings': self._extract_tcl_settings(chartcl_file),
+            'char_conditions': self._extract_char_conditions(chartcl_file)
         }
 
     def _parse_globals_inputs(self, globals_file: Path) -> Dict[str, Any]:
-        """Parse globals file to extract parameter values."""
+        """Parse globals file to extract parameter values using robust file parsing."""
 
-        if PARSERS_AVAILABLE:
-            try:
-                parser = GlobalsFileReader(str(globals_file))
-                parsed_data = parser.read()
-
-                return {
-                    'file_path': str(globals_file),
-                    'parser_used': 'GlobalsFileReader',
-                    'parsed_content': parsed_data,
-                    'raw_lines': self._extract_globals_lines(globals_file)
-                }
-            except Exception as e:
-                self.logger.warning(f"GlobalsFileReader failed: {e}, falling back to basic parsing")
-
-        # Fallback to basic parsing
         return {
             'file_path': str(globals_file),
-            'parser_used': 'basic_file_parsing',
+            'parser_used': 'robust_file_parsing',
             'raw_lines': self._extract_globals_lines(globals_file),
-            'parameters': self._extract_globals_parameters(globals_file)
+            'parameters': self._extract_globals_parameters(globals_file),
+            'spice_parameters': self._extract_spice_parameters(globals_file),
+            'model_info': self._extract_model_information(globals_file)
         }
 
     def _extract_key_template_lines(self, template_file: Path) -> List[str]:
@@ -437,6 +393,164 @@ class InputTraceabilityEngine:
             self.logger.error(f"Error extracting parameters from {globals_file}: {e}")
 
         return parameters
+
+    def _extract_tcl_variables(self, template_file: Path) -> Dict[str, str]:
+        """Extract TCL variable definitions from template.tcl."""
+        variables = {}
+
+        try:
+            with open(template_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Look for set variable_name value patterns
+                    if line.startswith('set '):
+                        parts = line.split()
+                        if len(parts) >= 3:
+                            var_name = parts[1]
+                            var_value = ' '.join(parts[2:])
+                            variables[var_name] = var_value
+
+        except Exception as e:
+            self.logger.error(f"Error extracting TCL variables from {template_file}: {e}")
+
+        return variables
+
+    def _extract_when_conditions_from_template(self, template_file: Path) -> List[Dict[str, str]]:
+        """Extract WHEN conditions from template.tcl."""
+        when_conditions = []
+
+        try:
+            with open(template_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if 'when' in line.lower():
+                        when_conditions.append({
+                            'line': line,
+                            'condition': self._extract_when_from_line(line)
+                        })
+
+        except Exception as e:
+            self.logger.error(f"Error extracting when conditions from {template_file}: {e}")
+
+        return when_conditions
+
+    def _extract_tcl_settings(self, chartcl_file: Path) -> Dict[str, str]:
+        """Extract TCL settings from chartcl.tcl."""
+        settings = {}
+
+        try:
+            with open(chartcl_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Look for set_* commands
+                    if line.startswith('set_'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            setting_name = parts[0]
+                            setting_value = ' '.join(parts[1:])
+                            settings[setting_name] = setting_value
+
+        except Exception as e:
+            self.logger.error(f"Error extracting TCL settings from {chartcl_file}: {e}")
+
+        return settings
+
+    def _extract_char_conditions(self, chartcl_file: Path) -> List[Dict[str, str]]:
+        """Extract characterization conditions from chartcl.tcl."""
+        conditions = []
+
+        try:
+            with open(chartcl_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Look for characterization-related conditions
+                    if any(keyword in line.lower() for keyword in ['char_', 'condition', 'sweep']):
+                        conditions.append({
+                            'line': line,
+                            'type': self._classify_char_condition(line)
+                        })
+
+        except Exception as e:
+            self.logger.error(f"Error extracting char conditions from {chartcl_file}: {e}")
+
+        return conditions
+
+    def _extract_spice_parameters(self, globals_file: Path) -> Dict[str, str]:
+        """Extract SPICE-specific parameters from globals file."""
+        spice_params = {}
+
+        try:
+            with open(globals_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line and not line.startswith('#'):
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+
+                        # Identify SPICE-specific parameters
+                        if any(spice_keyword in key.lower() for spice_keyword in [
+                            'temp', 'vdd', 'vss', 'process', 'corner', 'model', 'lib'
+                        ]):
+                            spice_params[key] = value
+
+        except Exception as e:
+            self.logger.error(f"Error extracting SPICE parameters from {globals_file}: {e}")
+
+        return spice_params
+
+    def _extract_model_information(self, globals_file: Path) -> Dict[str, Any]:
+        """Extract model and library information from globals file."""
+        model_info = {
+            'libraries': [],
+            'models': [],
+            'corners': []
+        }
+
+        try:
+            with open(globals_file, 'r') as f:
+                content = f.read()
+
+                # Look for library references
+                lib_pattern = r'\.lib\s+["\']?([^"\']+)["\']?'
+                model_info['libraries'] = re.findall(lib_pattern, content, re.IGNORECASE)
+
+                # Look for model references
+                model_pattern = r'\.model\s+(\w+)'
+                model_info['models'] = re.findall(model_pattern, content, re.IGNORECASE)
+
+                # Look for corner information
+                corner_keywords = ['tt', 'ss', 'ff', 'sf', 'fs', 'typical', 'slow', 'fast']
+                for keyword in corner_keywords:
+                    if keyword in content.lower():
+                        model_info['corners'].append(keyword)
+
+        except Exception as e:
+            self.logger.error(f"Error extracting model info from {globals_file}: {e}")
+
+        return model_info
+
+    def _extract_when_from_line(self, line: str) -> str:
+        """Extract WHEN condition from a line."""
+        when_match = re.search(r'when\s+([^=]+=[^=\s]+)', line, re.IGNORECASE)
+        return when_match.group(1) if when_match else ""
+
+    def _classify_char_condition(self, line: str) -> str:
+        """Classify the type of characterization condition."""
+        line_lower = line.lower()
+
+        if 'sweep' in line_lower:
+            return 'sweep_condition'
+        elif 'voltage' in line_lower or 'vdd' in line_lower:
+            return 'voltage_condition'
+        elif 'temperature' in line_lower or 'temp' in line_lower:
+            return 'temperature_condition'
+        elif 'slew' in line_lower:
+            return 'slew_condition'
+        elif 'load' in line_lower:
+            return 'load_condition'
+        else:
+            return 'general_condition'
 
     def _analyze_mc_sim_outputs(self, mc_sim_file: Path) -> Dict[str, Any]:
         """
@@ -1760,14 +1874,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Audit single arc
-  python audit_deck_compliance.py --arc_folder /work/MCQC_RUN/DECKS/mpw_SDFQTXG_X1/ --output_dir ./results/
+  # Audit single arc with explicit input files
+  python audit_deck_compliance.py --arc_folder /work/MCQC_RUN/DECKS/mpw_SDFQTXG_X1/ \\
+    --template_file /work/lib/template_mpw.tcl \\
+    --chartcl_file /work/lib/chartcl.tcl \\
+    --globals_file /work/lib/mcqc_globals_hspice.txt \\
+    --output_dir ./results/
 
-  # Audit multiple arcs
+  # Audit multiple arcs (auto-discover input files)
   python audit_deck_compliance.py --deck_dir /work/MCQC_RUN/DECKS/ --output_dir ./results/
 
-  # Verbose analysis with detailed logging
-  python audit_deck_compliance.py --deck_dir /work/DECKS/ --output_dir ./results/ --verbose
+  # Audit with specific configuration files
+  python audit_deck_compliance.py --deck_dir /work/DECKS/ \\
+    --template_file ./template.tcl \\
+    --globals_file ./globals.txt \\
+    --output_dir ./results/ --verbose
 
   # Generate only CSV summary
   python audit_deck_compliance.py --deck_dir /work/DECKS/ --output_dir ./results/ --csv_only
@@ -1787,12 +1908,29 @@ Examples:
         help='Path to directory containing multiple arc folders'
     )
 
+    # Configuration file arguments
+    parser.add_argument(
+        '--template_file',
+        type=Path,
+        help='Path to template.tcl file (if not specified, will search in arc hierarchy)'
+    )
+    parser.add_argument(
+        '--chartcl_file',
+        type=Path,
+        help='Path to chartcl.tcl file (if not specified, will search in arc hierarchy)'
+    )
+    parser.add_argument(
+        '--globals_file',
+        type=Path,
+        help='Path to globals file (if not specified, will search for *globals*.txt in arc hierarchy)'
+    )
+
     # Output arguments
     parser.add_argument(
         '--output_dir',
         type=Path,
         required=True,
-        help='Directory to write validation reports'
+        help='Directory to write summary reports (individual arc reports saved in arc directories)'
     )
 
     # Control arguments
@@ -1853,8 +1991,13 @@ Examples:
         print(f"[{i}/{len(arc_folders)}] Processing: {arc_folder.name}")
 
         try:
-            # Step 1: Trace inputs
-            traceability_data = tracer.trace_arc_inputs(arc_folder)
+            # Step 1: Trace inputs using explicit files if provided
+            traceability_data = tracer.trace_arc_inputs(
+                arc_folder,
+                template_file=args.template_file,
+                chartcl_file=args.chartcl_file,
+                globals_file=args.globals_file
+            )
 
             # Step 2: Analyze mc_sim.sp deck
             mc_sim_file = arc_folder / "mc_sim.sp"
@@ -1869,10 +2012,12 @@ Examples:
 
             validation_results.append(validation_result)
 
-            # Step 4: Generate individual report (unless CSV only)
+            # Step 4: Generate individual report in arc directory (unless CSV only)
             if not args.csv_only:
-                report_file = args.output_dir / f"{arc_folder.name}_compliance_report.yaml"
-                reporter.generate_structured_report(validation_result, report_file)
+                # Save individual arc report in the arc directory itself
+                arc_report_file = arc_folder / "compliance_validation_report.json"
+                reporter.generate_structured_report(validation_result, arc_report_file)
+                print(f"  📄 Arc report: {arc_report_file}")
 
             print(f"  ✅ Status: {validation_result['overall_status']}")
 
@@ -1906,12 +2051,12 @@ Examples:
     pass_rate = statuses.count('PASS') / len(statuses) if statuses else 0.0
     print(f"   Overall pass rate: {pass_rate:.1%}")
 
-    print(f"\n📁 Reports generated in: {args.output_dir}")
-    print(f"   CSV summary: {csv_file}")
+    print(f"\n📁 Summary reports in: {args.output_dir}")
+    print(f"   📊 CSV summary: {csv_file}")
 
     if not args.csv_only:
-        yaml_count = len([f for f in args.output_dir.glob("*_compliance_report.yaml")])
-        print(f"   YAML reports: {yaml_count} files")
+        print(f"   📄 Individual arc reports: compliance_validation_report.json in each arc directory")
+        print(f"   📈 Processed {len(validation_results)} arc directories")
 
     return 0
 

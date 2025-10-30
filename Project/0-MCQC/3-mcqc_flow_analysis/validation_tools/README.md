@@ -38,17 +38,30 @@ This tool demonstrates **complete understanding of the MCQC flow** by tracing EV
 
 ## 🚀 **Quick Start**
 
-### **Single Arc Analysis**
+### **Single Arc Analysis with Explicit Input Files**
 ```bash
 python audit_deck_compliance.py \
   --arc_folder /work/MCQC_RUN/DECKS/mpw_SDFQTXG_X1/ \
+  --template_file /work/lib/template_mpw.tcl \
+  --chartcl_file /work/lib/chartcl.tcl \
+  --globals_file /work/lib/mcqc_globals_hspice.txt \
   --output_dir ./results/
 ```
 
-### **Bulk Analysis**
+### **Bulk Analysis (Auto-discover Input Files)**
 ```bash
 python audit_deck_compliance.py \
   --deck_dir /work/MCQC_RUN/DECKS/ \
+  --output_dir ./results/ \
+  --verbose
+```
+
+### **With Specific Configuration Files**
+```bash
+python audit_deck_compliance.py \
+  --deck_dir /work/DECKS/ \
+  --template_file ./template.tcl \
+  --globals_file ./globals.txt \
   --output_dir ./results/ \
   --verbose
 ```
@@ -97,6 +110,20 @@ mpw_SDFQTXG_X1,PASS,80.0%,4,5,1,0.89,0.76
 mpw_SDFQD_X2,FAIL,60.0%,3,5,3,0.65,0.45
 ```
 
+### **Output Structure**
+```
+work_directory/
+├── results/                          # Summary reports (--output_dir)
+│   └── compliance_summary.csv        # Overall CSV summary
+└── DECKS/                            # Arc directories
+    ├── mpw_SDFQTXG_X1/
+    │   ├── mc_sim.sp                  # Analyzed SPICE deck
+    │   └── compliance_validation_report.json  # Individual arc report
+    └── mpw_SDFQD_X2/
+        ├── mc_sim.sp
+        └── compliance_validation_report.json
+```
+
 ## 🛡️ **Robust Design Features**
 
 ### **Graceful Dependency Handling**
@@ -136,13 +163,27 @@ The `mc_sim.sp` file contains the **ACTUAL** Monte Carlo simulation setup includ
 - `csv`, `json`, `re`, `pathlib`, `collections`, `argparse`, `logging`
 
 ### **Optional Dependencies**
-- `PyYAML` → Enhanced YAML report formatting
-- MCQC parsers → Authentic behavior integration (`charTemplateParser`, `chartcl_parser`, `globalsFileReader`)
+- `PyYAML` → Enhanced YAML report formatting (graceful fallback to JSON)
 
 ### **Input Requirements**
+
+#### **Required Inputs**
 - **Arc directories** containing `mc_sim.sp` files
-- **Input specification files** (template.tcl, chartcl.tcl, globals files) in arc hierarchy
-- **Sufficient data** for statistical validation (recommended 10+ arcs)
+- **Output directory** for summary reports
+
+#### **Configuration Files (Optional but Recommended)**
+- **template.tcl** → SPICE deck generation specifications
+- **chartcl.tcl** → Characterization configuration settings
+- **globals files** → Parameter values and model information (e.g., `mcqc_globals_hspice.txt`)
+
+#### **File Discovery Behavior**
+- **Explicit paths:** Use `--template_file`, `--chartcl_file`, `--globals_file` for precise control
+- **Auto-discovery:** If not specified, searches in arc folder → parent → grandparent hierarchy
+- **Multiple globals:** Automatically finds all `*globals*.txt` files in hierarchy
+
+#### **Data Requirements**
+- **Sufficient arcs** for statistical validation (recommended 10+ arcs)
+- **Complete mc_sim.sp files** with measurement statements
 
 ## 🎯 **Validation Tests**
 
