@@ -296,6 +296,151 @@ class InputTraceabilityEngine:
 
         return dict(arc_specs)
 
+    def extract_template_arc_definition(self, template_file: Path, cell_name: str, arc_type: str, related_pin: str, when_condition: str) -> Dict:
+        """
+        Find and extract the EXACT arc definition from template.tcl.
+
+        Returns:
+        {
+            'found': True/False,
+            'line_start': 1234,
+            'line_end': 1240,
+            'raw_text': '  timing() {\n    timing_type: "min_pulse_width";\n    ...\n  }',
+            'parsed_attributes': {
+                'timing_type': 'min_pulse_width',
+                'related_pin': 'CPN',
+                'when': '!E',
+                'rise_constraint': 'present',
+                'fall_constraint': 'present',
+            }
+        }
+        """
+        result = {
+            'found': False,
+            'line_start': None,
+            'line_end': None,
+            'raw_text': '',
+            'parsed_attributes': {},
+            'cell_line_start': None,
+            'cell_line_end': None,
+            'error': None
+        }
+
+        try:
+            with open(template_file, 'r') as f:
+                lines = f.readlines()
+
+            # Find the cell definition
+            cell_start = None
+            cell_end = None
+            in_cell = False
+            brace_count = 0
+
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+
+                # Look for cell definition
+                if f'cell({cell_name})' in stripped or f'cell \\"{cell_name}\\"' in stripped:
+                    cell_start = i + 1  # 1-based line numbers
+                    in_cell = True
+                    brace_count = 0
+                    continue
+
+                if in_cell:
+                    # Count braces to find cell end
+                    brace_count += stripped.count('{') - stripped.count('}')
+                    if brace_count < 0:
+                        cell_end = i + 1
+                        break
+
+            if not cell_start:
+                result['error'] = f'Cell {cell_name} not found in template.tcl'
+                return result
+
+            result['cell_line_start'] = cell_start
+            result['cell_line_end'] = cell_end
+
+            # Now search for the specific timing arc within the cell
+            arc_start = None
+            arc_end = None
+            in_timing_block = False
+            timing_brace_count = 0
+            found_attributes = {}
+
+            # Search within cell boundaries
+            start_idx = cell_start - 1  # Convert to 0-based
+            end_idx = cell_end - 1 if cell_end else len(lines)
+
+            for i in range(start_idx, min(end_idx, len(lines))):
+                line = lines[i]
+                stripped = line.strip()
+
+                # Look for timing block start
+                if 'timing()' in stripped and not in_timing_block:
+                    arc_start = i + 1  # 1-based line numbers
+                    in_timing_block = True
+                    timing_brace_count = 0
+                    found_attributes = {}
+                    continue
+
+                if in_timing_block:
+                    # Count braces to find timing block end
+                    timing_brace_count += stripped.count('{') - stripped.count('}')
+
+                    # Extract attributes within this timing block
+                    if ':' in stripped:
+                        # Parse attribute: value pairs
+                        if 'timing_type' in stripped:
+                            match = re.search(r'timing_type\s*:\s*"([^"]+)"', stripped)
+                            if match:
+                                found_attributes['timing_type'] = match.group(1)
+                        elif 'related_pin' in stripped:
+                            match = re.search(r'related_pin\s*:\s*"([^"]+)"', stripped)
+                            if match:
+                                found_attributes['related_pin'] = match.group(1)
+                        elif 'when' in stripped:
+                            match = re.search(r'when\s*:\s*"([^"]+)"', stripped)
+                            if match:
+                                found_attributes['when'] = match.group(1)
+                        elif 'rise_constraint' in stripped:
+                            found_attributes['rise_constraint'] = 'present'
+                        elif 'fall_constraint' in stripped:
+                            found_attributes['fall_constraint'] = 'present'
+
+                    if timing_brace_count < 0:
+                        arc_end = i + 1
+
+                        # Check if this timing block matches our criteria
+                        matches = True
+                        if arc_type == 'min_pulse_width' and found_attributes.get('timing_type') != 'min_pulse_width':
+                            matches = False
+                        if found_attributes.get('related_pin') != related_pin:
+                            matches = False
+                        # Note: when condition matching is complex, skip for now
+
+                        if matches:
+                            # Extract the raw text
+                            raw_lines = lines[arc_start-1:arc_end]
+                            result['raw_text'] = ''.join(raw_lines)
+                            result['line_start'] = arc_start
+                            result['line_end'] = arc_end
+                            result['parsed_attributes'] = found_attributes
+                            result['found'] = True
+                            return result
+
+                        # Reset for next timing block
+                        in_timing_block = False
+                        arc_start = None
+                        arc_end = None
+
+            if not result['found']:
+                result['error'] = f'No matching timing arc found for {arc_type} on {related_pin}'
+
+        except Exception as e:
+            result['error'] = f'Error parsing template.tcl: {e}'
+
+        return result
+
     def _extract_key_chartcl_lines(self, chartcl_file: Path) -> List[str]:
         """Extract key configuration lines from chartcl.tcl."""
         key_lines = []
@@ -316,6 +461,105 @@ class InputTraceabilityEngine:
             self.logger.error(f"Error reading chartcl file {chartcl_file}: {e}")
 
         return key_lines
+
+    def extract_relevant_chartcl_vars(self, chartcl_file: Path, arc_type: str, cell_name: str) -> Dict:
+        """
+        Extract ONLY the char.tcl variables relevant to this specific arc.
+
+        Relevance Criteria:
+        1. Arc-type specific variables (e.g., mpw_input_threshold for MPW arcs)
+        2. Cell-specific overrides (if any)
+        3. Global constraints that apply to this arc type
+
+        Returns variables with their values, line numbers, and usage explanation.
+        """
+        relevant_vars = {}
+        all_vars = {}
+
+        try:
+            with open(chartcl_file, 'r') as f:
+                lines = f.readlines()
+
+            # Parse all set_var commands
+            for line_num, line in enumerate(lines, 1):
+                stripped = line.strip()
+
+                # Look for set_var commands
+                if stripped.startswith('set_var'):
+                    match = re.search(r'set_var\s+(\w+)\s+(.+)', stripped)
+                    if match:
+                        var_name = match.group(1)
+                        var_value = match.group(2).strip().strip('"\'')
+                        all_vars[var_name] = {
+                            'value': var_value,
+                            'line': line_num,
+                            'raw_line': stripped
+                        }
+
+            # Filter based on arc type relevance
+            if arc_type == 'min_pulse_width':
+                # MPW-specific variables
+                mpw_vars = ['mpw_input_threshold', 'input_threshold', 'timing_threshold',
+                           'pulse_width_threshold', 'constraint_threshold']
+                for var in mpw_vars:
+                    if var in all_vars:
+                        relevant_vars[var] = {
+                            **all_vars[var],
+                            'usage': 'Used to calculate MPW timing threshold',
+                            'relevance': 'Arc type specific (min_pulse_width)'
+                        }
+
+            # Arc type agnostic but generally relevant
+            general_vars = ['constraint_glitch_peak', 'slew_lower_threshold', 'slew_upper_threshold',
+                           'input_threshold_pct_rise', 'input_threshold_pct_fall',
+                           'output_threshold_pct_rise', 'output_threshold_pct_fall']
+
+            for var in general_vars:
+                if var in all_vars:
+                    usage_map = {
+                        'constraint_glitch_peak': 'Glitch detection threshold',
+                        'slew_lower_threshold': 'Slew measurement lower threshold',
+                        'slew_upper_threshold': 'Slew measurement upper threshold',
+                        'input_threshold_pct_rise': 'Input threshold percentage for rise',
+                        'input_threshold_pct_fall': 'Input threshold percentage for fall',
+                        'output_threshold_pct_rise': 'Output threshold percentage for rise',
+                        'output_threshold_pct_fall': 'Output threshold percentage for fall'
+                    }
+
+                    relevant_vars[var] = {
+                        **all_vars[var],
+                        'usage': usage_map.get(var, 'General measurement configuration'),
+                        'relevance': 'General (applies to all arcs)'
+                    }
+
+            # Cell-specific overrides (look for variables containing cell name)
+            cell_specific = {}
+            for var_name, var_info in all_vars.items():
+                if cell_name.lower() in var_name.lower():
+                    cell_specific[var_name] = {
+                        **var_info,
+                        'usage': f'Cell-specific override for {cell_name}',
+                        'relevance': f'Cell specific ({cell_name})'
+                    }
+
+            # Add cell-specific vars
+            relevant_vars.update(cell_specific)
+
+            return {
+                'relevant_vars': relevant_vars,
+                'total_vars_in_file': len(all_vars),
+                'relevant_count': len(relevant_vars),
+                'suppressed_count': len(all_vars) - len(relevant_vars)
+            }
+
+        except Exception as e:
+            return {
+                'relevant_vars': {},
+                'error': f'Error parsing char.tcl file: {e}',
+                'total_vars_in_file': 0,
+                'relevant_count': 0,
+                'suppressed_count': 0
+            }
 
     def _extract_chartcl_measurements(self, chartcl_file: Path) -> List[Dict[str, str]]:
         """Extract measurement configuration from chartcl.tcl."""
@@ -393,6 +637,65 @@ class InputTraceabilityEngine:
             self.logger.error(f"Error extracting parameters from {globals_file}: {e}")
 
         return parameters
+
+    def extract_template_from_deck(self, deck_file: Path) -> Dict:
+        """
+        Extract template path from deck file header.
+
+        Looks for line like:
+        * TEMPLATE_DECK_PATH /path/to/template__CPN__rise__fall__1.sp
+
+        Returns:
+        {
+            'full_path': '/path/to/template__CPN__rise__fall__1.sp',
+            'filename': 'template__CPN__rise__fall__1.sp',
+            'found_at_line': 5,
+            'found': True
+        }
+        """
+        try:
+            with open(deck_file, 'r') as f:
+                for line_num, line in enumerate(f, 1):
+                    if 'TEMPLATE_DECK_PATH' in line:
+                        # Extract path after "TEMPLATE_DECK_PATH"
+                        template_path = line.split('TEMPLATE_DECK_PATH')[1].strip()
+                        # Remove leading comment markers if present
+                        template_path = template_path.lstrip('*').strip()
+                        return {
+                            'found': True,
+                            'full_path': template_path,
+                            'filename': os.path.basename(template_path),
+                            'found_at_line': line_num,
+                            'raw_line': line.strip()
+                        }
+
+                    # Also look for other template indicators
+                    if '.includes' in line.lower() and 'template' in line.lower():
+                        # Alternative template reference
+                        template_path = line.strip()
+                        return {
+                            'found': True,
+                            'full_path': template_path,
+                            'filename': os.path.basename(template_path),
+                            'found_at_line': line_num,
+                            'raw_line': line.strip(),
+                            'note': 'Found via .includes directive'
+                        }
+
+                    # Stop searching after first 20 lines (headers only)
+                    if line_num > 20:
+                        break
+
+            return {
+                'found': False,
+                'error': 'No TEMPLATE_DECK_PATH found in deck header'
+            }
+
+        except Exception as e:
+            return {
+                'found': False,
+                'error': f'Error reading deck file: {e}'
+            }
 
     def _extract_tcl_variables(self, template_file: Path) -> Dict[str, str]:
         """Extract TCL variable definitions from template.tcl."""
@@ -1600,7 +1903,7 @@ class ReportGenerator:
         report_lines.extend(self._generate_arc_identification_section(arc_name, traceability_data, deck_analysis))
 
         # Input Specifications
-        report_lines.extend(self._generate_input_specifications_section(traceability_data))
+        report_lines.extend(self._generate_input_specifications_section(traceability_data, arc_name))
 
         # Generated Deck Analysis
         report_lines.extend(self._generate_deck_analysis_section(deck_analysis))
@@ -1898,7 +2201,7 @@ class ReportGenerator:
 
         return lines
 
-    def _generate_input_specifications_section(self, traceability_data: Dict) -> List[str]:
+    def _generate_input_specifications_section(self, traceability_data: Dict, arc_name: str) -> List[str]:
         """Generate the input specifications section."""
         lines = [
             "INPUT SPECIFICATIONS",
@@ -1906,15 +2209,17 @@ class ReportGenerator:
             ""
         ]
 
+        # Parse arc information for context
+        arc_info = self._parse_arc_name(arc_name)
         input_sources = traceability_data.get('input_sources', {})
 
         # [A] Template.tcl Specifications
         if 'template' in input_sources:
-            lines.extend(self._format_template_specifications(input_sources['template']))
+            lines.extend(self._format_template_specifications(input_sources['template'], arc_info))
 
         # [B] Chartcl.tcl Variables
         if 'chartcl' in input_sources:
-            lines.extend(self._format_chartcl_specifications(input_sources['chartcl']))
+            lines.extend(self._format_chartcl_specifications(input_sources['chartcl'], arc_info))
 
         # [C] Globals File Configuration
         globals_sources = {k: v for k, v in input_sources.items() if k.startswith('globals_')}
@@ -2123,36 +2428,35 @@ class ReportGenerator:
         """
         Decode when condition from arc name parts.
 
+        Rules:
+        1. "not" prefix or infix = logical NOT (!)
+        2. Underscore (_) = logical AND (&)
+        3. Multiple conditions separated by underscore
+
         Examples:
-        - ['E', 'noTE'] → 'E_noTE' (decoded as '!E' if noTE means "not E")
-        - ['SE', '0'] → 'SE_0'
-        - ['SN', '1'] → 'SN_1'
+        - ['E', 'notTE'] → 'E & !TE'
+        - ['D', 'SE', 'notSI'] → 'D & SE & !SI'
+        - ['notRST'] → '!RST'
+        - ['SE', '0'] → 'SE==0' (vector assignment)
         """
         if not when_parts:
             return 'none'
 
+        # First join parts with underscore
         when_condition = '_'.join(when_parts)
 
-        # Decode common patterns
-        if len(when_parts) == 2:
-            signal = when_parts[0]
-            modifier = when_parts[1]
+        # Apply transformations
+        # Replace "not" with "!" (word boundary aware)
+        # Handle both "notSIGNAL" and "SIGNAL_notOTHER" patterns
+        result = re.sub(r'not(\w+)', r'!\1', when_condition)
 
-            # Handle "no" prefix meaning negation
-            if modifier.startswith('no'):
-                negated_signal = modifier[2:]  # Remove 'no' prefix
-                if negated_signal == signal:
-                    return f'!{signal}'
-                else:
-                    return f'{signal}_!{negated_signal}'
-            else:
-                # Regular signal_value pattern
-                return f'{signal}_{modifier}'
+        # Replace underscore with " & " for logical AND
+        result = result.replace('_', ' & ')
 
-        return when_condition
+        return result
 
-    def _format_template_specifications(self, template_data: Dict) -> List[str]:
-        """Format template.tcl specifications section."""
+    def _format_template_specifications(self, template_data: Dict, arc_info: Dict) -> List[str]:
+        """Format template.tcl specifications section with actual arc extraction."""
         lines = [
             "[A] Template.tcl Specifications",
             "-" * 80,
@@ -2160,37 +2464,75 @@ class ReportGenerator:
             ""
         ]
 
-        # Parse key attributes
-        measurements = template_data.get('measurements_found', [])
-        tcl_variables = template_data.get('tcl_variables', {})
+        # Try to extract actual arc definition using the new method
+        template_file = Path(template_data.get('file_path', ''))
+        if template_file.exists():
+            cell_name = arc_info.get('cell_name', 'unknown')
+            arc_type = arc_info.get('arc_type', 'unknown')
+            related_pin = arc_info.get('related_pin', 'unknown')
+            when_condition = arc_info.get('when_condition', 'unknown')
 
-        if measurements or tcl_variables:
-            lines.append("Parsed Attributes:")
+            # Use the new extraction method
+            tracer = InputTraceabilityEngine()
+            arc_def = tracer.extract_template_arc_definition(
+                template_file, cell_name, arc_type, related_pin, when_condition
+            )
 
-            # Show key TCL variables
-            for var_name, var_value in tcl_variables.items():
-                if any(keyword in var_name.lower() for keyword in ['timing', 'related', 'when', 'constraint']):
-                    lines.append(f"  • {var_name:20} {var_value}")
+            if arc_def['found']:
+                lines.extend([
+                    f"Cell Definition:    Line {arc_def['cell_line_start']}-{arc_def['cell_line_end']} (cell {cell_name})",
+                    f"Arc Definition:     Line {arc_def['line_start']}-{arc_def['line_end']}",
+                    "",
+                    "Extracted Arc Definition from Template.tcl:",
+                    "┌────────────────────────────────────────────────────────────────────────┐"
+                ])
 
-            # Show measurement count
-            if measurements:
-                lines.append(f"  • measurements_found:     {len(measurements)}")
+                # Format the raw text with line numbers
+                raw_lines = arc_def['raw_text'].split('\n')
+                for i, line in enumerate(raw_lines):
+                    if line.strip():
+                        line_num = arc_def['line_start'] + i
+                        lines.append(f"│ {line:<66} [Line {line_num:>4}] │")
 
-            lines.append("")
+                lines.extend([
+                    "└────────────────────────────────────────────────────────────────────────┘",
+                    "",
+                    "Parsed Attributes Found in Template.tcl:"
+                ])
 
-        # Enhanced specifications status
+                attrs = arc_def['parsed_attributes']
+                for attr_name, attr_value in attrs.items():
+                    status = "✓" if attr_value else "⊗"
+                    lines.append(f"  {status} {attr_name:<16} \"{attr_value}\"")
+
+                lines.append("")
+
+            else:
+                lines.extend([
+                    f"❌ Arc Definition: NOT FOUND",
+                    f"   Search Target:  {arc_type} on {related_pin}",
+                    f"   Cell:           {cell_name}",
+                    f"   Error:          {arc_def.get('error', 'Unknown error')}",
+                    ""
+                ])
+
         lines.extend([
-            "Enhanced Specifications:",
-            "  • final_state_check:      [NOT SPECIFIED in current template.tcl]",
-            "  • monitoring_cycles:      [NOT SPECIFIED in current template.tcl]",
-            "  • measurement_node:       [NOT SPECIFIED in current template.tcl]",
+            "Enhanced Specifications (Future - Not Yet in Template.tcl):",
+            "  ⊗ final_state_check:      Not specified",
+            "  ⊗ monitoring_cycles:      Not specified",
+            "  ⊗ measurement_node:       Not specified",
+            "",
+            "Note: Enhanced specifications would appear in future template.tcl as:",
+            "      final_state_check: true;",
+            "      monitoring_cycles: 2;",
+            "      measurement_node: \"Q\";",
             ""
         ])
 
         return lines
 
-    def _format_chartcl_specifications(self, chartcl_data: Dict) -> List[str]:
-        """Format chartcl.tcl specifications section."""
+    def _format_chartcl_specifications(self, chartcl_data: Dict, arc_info: Dict) -> List[str]:
+        """Format chartcl.tcl specifications section with relevance filtering."""
         lines = [
             "[B] Chartcl.tcl Variables",
             "-" * 80,
@@ -2198,12 +2540,60 @@ class ReportGenerator:
             ""
         ]
 
-        tcl_settings = chartcl_data.get('tcl_settings', {})
-        if tcl_settings:
-            lines.append("Parsed Variables:")
-            for setting_name, setting_value in tcl_settings.items():
-                lines.append(f"  • {setting_name:20} {setting_value}")
-            lines.append("")
+        # Use new relevant variable extraction
+        chartcl_file = Path(chartcl_data.get('file_path', ''))
+        if chartcl_file.exists():
+            cell_name = arc_info.get('cell_name', 'unknown')
+            arc_type = arc_info.get('arc_type', 'unknown')
+
+            tracer = InputTraceabilityEngine()
+            relevant_vars = tracer.extract_relevant_chartcl_vars(chartcl_file, arc_type, cell_name)
+
+            if relevant_vars.get('relevant_vars'):
+                lines.extend([
+                    "Relevant Variables for this Arc:",
+                    "┌────────────────────────────────────────────────────────────────────────┐"
+                ])
+
+                for i, (var_name, var_info) in enumerate(relevant_vars['relevant_vars'].items(), 1):
+                    line_num = var_info.get('line', 'unknown')
+                    value = var_info.get('value', 'unknown')
+                    usage = var_info.get('usage', 'Unknown usage')
+                    relevance = var_info.get('relevance', 'Unknown relevance')
+
+                    lines.extend([
+                        f"│ [{i}] {var_name:<40} [Line {line_num:>4}]        │",
+                        f"│     Value:          {value:<46} │",
+                        f"│     Usage:          {usage:<46} │",
+                        f"│     Applied to:     {relevance:<46} │"
+                    ])
+
+                    if i < len(relevant_vars['relevant_vars']):
+                        lines.append("│                                                                        │")
+
+                lines.extend([
+                    "└────────────────────────────────────────────────────────────────────────┘",
+                    ""
+                ])
+
+                suppressed = relevant_vars.get('suppressed_count', 0)
+                if suppressed > 0:
+                    lines.extend([
+                        "Variables NOT Relevant to this Arc:",
+                        f"  (Suppressed: {suppressed} other char.tcl variables not applicable to {arc_type} arcs)",
+                        ""
+                    ])
+            else:
+                lines.extend([
+                    "❌ No relevant variables found or error parsing char.tcl",
+                    f"   Error: {relevant_vars.get('error', 'Unknown error')}",
+                    ""
+                ])
+        else:
+            lines.extend([
+                "❌ Chartcl file not found or inaccessible",
+                ""
+            ])
 
         return lines
 
@@ -2239,88 +2629,154 @@ class ReportGenerator:
         ]
 
     def _format_primary_measurements(self, deck_analysis: Dict) -> List[str]:
-        """Format primary timing measurements section."""
+        """Format primary delay measurement analysis section."""
         lines = [
-            "[1] Primary Timing Measurements",
-            "-" * 80
+            "┌────────────────────────────────────────────────────────────────────────┐",
+            "│ [1] PRIMARY DELAY MEASUREMENT                                          │",
+            "└────────────────────────────────────────────────────────────────────────┘",
+            ""
         ]
 
         measurements = deck_analysis.get('measurements', [])
-        basic_measurements = [m for m in measurements if m.get('measurement_type') == 'delay_measurement']
+        cp2q_del1_found = False
 
-        if basic_measurements:
-            for meas in basic_measurements:
-                meas_name = meas.get('measurement_name', 'unknown')
+        for meas in measurements:
+            meas_name = meas.get('measurement_name', 'unknown')
+            if 'cp2q_del1' in meas_name:
+                cp2q_del1_found = True
                 line_num = meas.get('line_number', 'unknown')
-                lines.append(f"✓ {meas_name:16} PRESENT (Line {line_num})")
-
-                # Show truncated content
                 full_line = meas.get('full_line', '')
-                if len(full_line) > 80:
-                    content = full_line[:77] + "..."
-                else:
-                    content = full_line
-                lines.append(f"    Content: {content}")
-        else:
-            lines.append("✗ No primary timing measurements found")
 
-        lines.append("")
+                lines.extend([
+                    f"cp2q_del1           ✓ PRESENT (Line {line_num})",
+                    f"  Type:             Primary delay measurement (required for all MPW arcs)",
+                    f"  Content:          {full_line[:80]}{'...' if len(full_line) > 80 else ''}",
+                    "",
+                    "  Analysis:",
+                    f"    Trigger:        Pin transition detection",
+                    f"    Target:         Output response measurement",
+                    f"    Purpose:        Core timing characterization",
+                    f"    Status:         ✓ PASS - Required measurement present",
+                    ""
+                ])
+                break
+
+        if not cp2q_del1_found:
+            lines.extend([
+                "cp2q_del1           ✗ NOT PRESENT",
+                "  Type:             Primary delay measurement (REQUIRED)",
+                "  Status:           ✗ FAIL - Critical measurement missing",
+                "  Impact:           Arc cannot be characterized without primary measurement",
+                "  Template Spec:    Should be generated from timing() block in template.tcl",
+                ""
+            ])
+
         return lines
 
     def _format_final_state_analysis(self, deck_analysis: Dict) -> List[str]:
         """Format final-state checks analysis section."""
         lines = [
-            "[2] Final-State Checks",
-            "-" * 80
+            "┌────────────────────────────────────────────────────────────────────────┐",
+            "│ [2] FINAL-STATE CHECKS                                                 │",
+            "└────────────────────────────────────────────────────────────────────────┘",
+            ""
         ]
 
         final_state_patterns = deck_analysis.get('final_state_patterns', [])
+        measurements = deck_analysis.get('measurements', [])
 
-        if final_state_patterns:
-            for pattern in final_state_patterns:
-                meas_name = pattern.get('measurement_name', 'unknown')
-                line_num = pattern.get('line_number', 'unknown')
+        # Look for final_state measurements
+        final_state_found = False
+        final_state_check_found = False
+
+        for meas in measurements:
+            meas_name = meas.get('measurement_name', 'unknown')
+            if 'final_state' in meas_name:
+                final_state_found = True
+                line_num = meas.get('line_number', 'unknown')
+                full_line = meas.get('full_line', '')
+
                 lines.extend([
-                    f"✓ {meas_name:16} PRESENT (Line {line_num})",
-                    f"    Status:         Pattern detected (74% of arcs have this)",
-                    f"    Note:           Generated by hidden Python logic",
+                    f"final_state         ✓ PRESENT (Line {line_num})",
+                    f"  Type:             Optional end-state verification",
+                    f"  Content:          {full_line[:80]}{'...' if len(full_line) > 80 else ''}",
+                    f"  Status:           Present in this deck",
+                    f"  Template Spec:    ⊗ Not specified in template.tcl (added by Python logic)",
+                    f"  Note:             Found in 74% of other arcs",
                     ""
                 ])
-        else:
+
+            if 'final_state_check' in meas_name:
+                final_state_check_found = True
+                line_num = meas.get('line_number', 'unknown')
+                lines.extend([
+                    f"final_state_check   ✓ PRESENT (Line {line_num})",
+                    f"  Type:             Pass/fail criteria for final-state",
+                    f"  Status:           Active verification criteria",
+                    ""
+                ])
+
+        if not final_state_found:
             lines.extend([
-                "✗ final_state       MISSING",
-                "    Expected By:    [Would be specified by template.tcl: final_state_check=true]",
-                "    Status:         Not present in current template.tcl specification",
-                "    Note:           Found in 74% of other arcs (hidden Python logic)",
+                "final_state         ⊗ NOT PRESENT",
+                "  Type:             Optional end-state verification",
+                "  Status:           Not present in this deck",
+                "  Template Spec:    ⊗ Not specified in template.tcl (expected)",
+                "  Note:             Final-state checks are added by hidden Python logic",
+                "                    Found in 74% of other arcs",
+                "  Future:           Will be specified via: final_state_check: true/false",
+                ""
+            ])
+
+        if not final_state_check_found and not final_state_found:
+            lines.extend([
+                "final_state_check   ⊗ NOT PRESENT",
+                "  Type:             Pass/fail criteria for final-state",
+                "  Status:           Not applicable (no final_state measurement)",
                 ""
             ])
 
         return lines
 
     def _format_monitoring_cycles_analysis(self, deck_analysis: Dict) -> List[str]:
-        """Format monitoring cycles analysis section."""
+        """Format monitoring cycles (secondary measurements) analysis section."""
         lines = [
-            "[3] Monitoring Cycles",
-            "-" * 80
+            "┌────────────────────────────────────────────────────────────────────────┐",
+            "│ [3] MONITORING CYCLES (Secondary Measurements)                         │",
+            "└────────────────────────────────────────────────────────────────────────┘",
+            ""
         ]
 
-        cp2q_patterns = deck_analysis.get('cp2q_patterns', [])
+        measurements = deck_analysis.get('measurements', [])
+        cp2q_del2_found = False
 
-        if cp2q_patterns:
-            for i, pattern in enumerate(cp2q_patterns, 1):
-                meas_name = pattern.get('measurement_name', 'unknown')
-                line_num = pattern.get('line_number', 'unknown')
+        for meas in measurements:
+            meas_name = meas.get('measurement_name', 'unknown')
+            if 'cp2q_del2' in meas_name:
+                cp2q_del2_found = True
+                line_num = meas.get('line_number', 'unknown')
+                full_line = meas.get('full_line', '')
+
                 lines.extend([
-                    f"✓ {meas_name:16} PRESENT (Line {line_num})",
-                    f"    Status:         Monitoring cycle {i}",
+                    f"cp2q_del2           ✓ PRESENT (Line {line_num})",
+                    f"  Type:             Secondary monitoring cycle (optional)",
+                    f"  Content:          {full_line[:80]}{'...' if len(full_line) > 80 else ''}",
+                    f"  Status:           Present in this deck",
+                    f"  Template Spec:    ⊗ Not specified in template.tcl (added by Python logic)",
+                    f"  Note:             Found in 14.9% of other arcs (pattern unclear)",
+                    f"  Future:           Will be specified via: monitoring_cycles: 2",
                     ""
                 ])
-        else:
+                break
+
+        if not cp2q_del2_found:
             lines.extend([
-                "✗ cp2q_del2         MISSING",
-                "    Expected By:    [Would be specified by template.tcl: monitoring_cycles=2]",
-                "    Status:         Not present in current template.tcl specification",
-                "    Note:           Found in 14.9% of other arcs (hidden logic)",
+                "cp2q_del2           ⊗ NOT PRESENT",
+                "  Type:             Secondary monitoring cycle (optional)",
+                "  Status:           Not present in this deck",
+                "  Template Spec:    ⊗ Not specified in template.tcl (expected)",
+                "  Note:             Found in 14.9% of other arcs (pattern unclear)",
+                "  Future:           Will be specified via: monitoring_cycles: 2",
                 ""
             ])
 
@@ -2329,26 +2785,54 @@ class ReportGenerator:
     def _format_measurement_nodes_analysis(self, deck_analysis: Dict) -> List[str]:
         """Format measurement nodes analysis section."""
         lines = [
-            "[4] Measurement Nodes",
-            "-" * 80
+            "┌────────────────────────────────────────────────────────────────────────┐",
+            "│ [4] MEASUREMENT NODES                                                  │",
+            "└────────────────────────────────────────────────────────────────────────┘",
+            ""
         ]
 
         # Analyze internal node usage
         internal_nodes = deck_analysis.get('internal_nodes', [])
+        measurements = deck_analysis.get('measurements', [])
+
+        # Determine primary measurement node from cp2q_del1
+        primary_node = "Q"  # Default assumption
+        for meas in measurements:
+            if 'cp2q_del1' in meas.get('measurement_name', ''):
+                full_line = meas.get('full_line', '')
+                # Try to extract target node from TARG v(...) pattern
+                match = re.search(r'TARG\s+v\(([^)]+)\)', full_line)
+                if match:
+                    primary_node = match.group(1)
+                break
 
         if internal_nodes:
-            lines.append("✓ Internal Nodes:   Detected")
-            node_examples = list(set([node.get('node_reference', '') for node in internal_nodes[:3]]))
-            for node in node_examples:
-                lines.append(f"    Node:           {node}")
-        else:
             lines.extend([
-                "✓ Primary Node:     Output pins (standard)",
-                "    Status:         Correct - uses standard output pin references",
-                "    Note:           Some arcs use internal nodes (e.g., X1.Q1) - pattern varies"
+                f"Primary Node:       {primary_node}",
+                f"  Status:           ✓ Using internal node measurement",
+                f"  Type:             Internal node (not direct output)",
+                f"  Note:             Some arcs use internal nodes (e.g., X1.Q1)",
+                f"                    Pattern for internal node selection is unclear",
+                f"  Future:           Will be specified via: measurement_node: \"{primary_node}\"",
+                ""
             ])
 
-        lines.append("")
+            lines.append("Internal Nodes Detected:")
+            node_examples = list(set([node.get('node_reference', '') for node in internal_nodes[:3]]))
+            for node in node_examples:
+                lines.append(f"  • {node}")
+            lines.append("")
+        else:
+            lines.extend([
+                f"Primary Node:       {primary_node} (output pin)",
+                f"  Status:           ✓ Standard output pin measurement",
+                f"  Type:             Direct output (not internal node)",
+                f"  Note:             Some arcs use internal nodes (e.g., X1.Q1)",
+                f"                    Pattern for internal node selection is unclear",
+                f"  Future:           Will be specified via: measurement_node: \"Q\" or \"X1.Q1\"",
+                ""
+            ])
+
         return lines
 
     def _calculate_test_summary(self, tests: Dict) -> Dict[str, Any]:
