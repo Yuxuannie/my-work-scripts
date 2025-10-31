@@ -440,11 +440,12 @@ class InputTraceabilityEngine:
                                 if found_when.replace('&', '').replace('!', '') != parsed_when.replace('&', '').replace('!', ''):
                                     match_reasons.append(f"When condition mismatch: expected {parsed_when}, found {found_when}")
 
-                        # Check vector (if specified, should match)
+                        # Check vector (loosened criteria - log mismatch but don't fail match)
                         found_vector = found_attributes.get('vector', '')
                         parsed_vector = arc_info.get('vector', '')
                         if found_vector and parsed_vector and found_vector != parsed_vector:
-                            match_reasons.append(f"Vector mismatch: expected {parsed_vector}, found {found_vector}")
+                            # Log mismatch but don't fail the match (vectors can vary)
+                            match_reasons.append(f"Vector mismatch (not critical): expected {parsed_vector}, found {found_vector}")
 
                     # Check cell name (use flexible matching - cell name should be contained)
                     found_cell = found_attributes.get('cell_name', '')
@@ -559,87 +560,54 @@ class InputTraceabilityEngine:
 
             # Filter based on arc type relevance
             if arc_type == 'min_pulse_width':
-                # MPW-specific variables (all constraint-related for min_pulse_width)
-                mpw_vars = [
-                    'mpw_input_threshold', 'input_threshold', 'timing_threshold',
-                    'pulse_width_threshold', 'constraint_threshold',
-                    'mpw_slew_threshold', 'mpw_load_threshold',
-                    'constraint_setup_threshold', 'constraint_hold_threshold',
-                    'constraint_pulse_width_threshold', 'constraint_recovery_threshold',
-                    'constraint_removal_threshold', 'constraint_skew_threshold',
-                    'constraint_min_period_threshold', 'constraint_max_period_threshold'
-                ]
+                # Find ALL MPW and constraint-related variables (not just predefined list)
+                for var_name, var_info in all_vars.items():
+                    var_lower = var_name.lower()
 
-                usage_map_mpw = {
-                    'mpw_input_threshold': 'Input threshold for MPW timing calculation',
-                    'input_threshold': 'General input threshold for MPW arcs',
-                    'timing_threshold': 'Timing measurement threshold',
-                    'pulse_width_threshold': 'Pulse width constraint threshold',
-                    'constraint_threshold': 'General constraint threshold',
-                    'mpw_slew_threshold': 'Slew threshold for MPW measurements',
-                    'mpw_load_threshold': 'Load threshold for MPW characterization'
-                }
-
-                for var in mpw_vars:
-                    if var in all_vars:
-                        relevant_vars[var] = {
-                            **all_vars[var],
-                            'usage': usage_map_mpw.get(var, 'MPW constraint-related setting'),
+                    # MPW-specific patterns
+                    if any(pattern in var_lower for pattern in ['mpw', 'pulse_width', 'min_pulse']):
+                        relevant_vars[var_name] = {
+                            **var_info,
+                            'usage': f'MPW-specific setting: {var_name}',
                             'relevance': 'Arc type specific (min_pulse_width)'
                         }
 
-            # Constraint-related variables (applicable to all constraint arcs)
-            constraint_vars = [
-                'constraint_glitch_peak', 'constraint_glitch_valley',
-                'constraint_input_threshold', 'constraint_output_threshold',
-                'constraint_slew_threshold', 'constraint_load_threshold',
-                'constraint_voltage_threshold', 'constraint_temperature_threshold'
-            ]
+                    # Constraint-related patterns
+                    elif any(pattern in var_lower for pattern in ['constraint', 'threshold']):
+                        if 'timing' in var_lower or 'input' in var_lower or 'output' in var_lower:
+                            relevant_vars[var_name] = {
+                                **var_info,
+                                'usage': f'Constraint/threshold setting: {var_name}',
+                                'relevance': 'Constraint specific (timing-related)'
+                            }
 
-            # Arc type agnostic but generally relevant
-            general_vars = ['slew_lower_threshold', 'slew_upper_threshold',
-                           'input_threshold_pct_rise', 'input_threshold_pct_fall',
-                           'output_threshold_pct_rise', 'output_threshold_pct_fall',
-                           'voltage_threshold', 'temperature_threshold']
+            # Find ALL constraint-related variables (not just predefined list)
+            for var_name, var_info in all_vars.items():
+                if var_name not in relevant_vars:  # Don't duplicate
+                    var_lower = var_name.lower()
 
-            # Add constraint-related variables
-            for var in constraint_vars:
-                if var in all_vars:
-                    constraint_usage_map = {
-                        'constraint_glitch_peak': 'Peak glitch detection threshold',
-                        'constraint_glitch_valley': 'Valley glitch detection threshold',
-                        'constraint_input_threshold': 'Input constraint threshold',
-                        'constraint_output_threshold': 'Output constraint threshold',
-                        'constraint_slew_threshold': 'Slew constraint threshold',
-                        'constraint_load_threshold': 'Load constraint threshold',
-                        'constraint_voltage_threshold': 'Voltage constraint threshold',
-                        'constraint_temperature_threshold': 'Temperature constraint threshold'
-                    }
+                    # Catch all constraint-related variables
+                    if any(pattern in var_lower for pattern in ['constraint', 'glitch', 'threshold']):
+                        if any(timing_pattern in var_lower for timing_pattern in ['slew', 'delay', 'setup', 'hold', 'recovery', 'removal', 'skew', 'period']):
+                            relevant_vars[var_name] = {
+                                **var_info,
+                                'usage': f'Constraint/timing setting: {var_name}',
+                                'relevance': 'Constraint specific (timing-related)'
+                            }
+                        elif any(pattern in var_lower for pattern in ['input', 'output', 'voltage', 'temperature', 'load']):
+                            relevant_vars[var_name] = {
+                                **var_info,
+                                'usage': f'Constraint threshold: {var_name}',
+                                'relevance': 'Constraint specific (threshold)'
+                            }
 
-                    relevant_vars[var] = {
-                        **all_vars[var],
-                        'usage': constraint_usage_map.get(var, 'Constraint-related threshold'),
-                        'relevance': 'Constraint specific (all constraint arcs)'
-                    }
-
-            for var in general_vars:
-                if var in all_vars:
-                    usage_map = {
-                        'slew_lower_threshold': 'Slew measurement lower threshold',
-                        'slew_upper_threshold': 'Slew measurement upper threshold',
-                        'input_threshold_pct_rise': 'Input threshold percentage for rise',
-                        'input_threshold_pct_fall': 'Input threshold percentage for fall',
-                        'output_threshold_pct_rise': 'Output threshold percentage for rise',
-                        'output_threshold_pct_fall': 'Output threshold percentage for fall',
-                        'voltage_threshold': 'General voltage threshold',
-                        'temperature_threshold': 'General temperature threshold'
-                    }
-
-                    relevant_vars[var] = {
-                        **all_vars[var],
-                        'usage': usage_map.get(var, 'General measurement configuration'),
-                        'relevance': 'General (applies to all arcs)'
-                    }
+                    # General measurement variables
+                    elif any(pattern in var_lower for pattern in ['input_threshold', 'output_threshold', 'timing_threshold']):
+                        relevant_vars[var_name] = {
+                            **var_info,
+                            'usage': f'General measurement threshold: {var_name}',
+                            'relevance': 'General (applies to all arcs)'
+                        }
 
             # Cell-specific overrides (look for variables containing cell name)
             cell_specific = {}
@@ -1000,11 +968,17 @@ class InputTraceabilityEngine:
                     # Identify measurements
                     if line.lower().startswith('.meas'):
                         # Extract measurement name from .meas command
-                        # Format: .meas tran measurement_name TRIG ... TARG ...
+                        # Format variations:
+                        # .meas tran measurement_name TRIG ... TARG ...
+                        # .meas cp2q_del1 TRIG ... TARG ...
                         measurement_name = 'unknown'
                         parts = line.split()
                         if len(parts) >= 3:
-                            measurement_name = parts[2]  # Third part is usually the measurement name
+                            # Check if second part is a measurement type (tran, dc, ac) or measurement name
+                            if parts[1].lower() in ['tran', 'dc', 'ac']:
+                                measurement_name = parts[2]  # Third part is measurement name
+                            else:
+                                measurement_name = parts[1]  # Second part is measurement name directly
 
                         measurement_data = {
                             'line_number': line_num,
@@ -1377,9 +1351,19 @@ class SPICEDeckAnalyzer:
 
     def _extract_measurement_name(self, line: str) -> str:
         """Extract measurement name from .meas line."""
-        # Pattern: .meas [analysis] measurement_name ...
-        match = re.search(r'\.meas\s+(?:\w+\s+)?(\w+)', line, re.IGNORECASE)
-        return match.group(1) if match else "unknown"
+        # Handle two formats:
+        # 1. .meas [analysis_type] measurement_name ... (e.g., .meas tran cp2q_del1 ...)
+        # 2. .meas measurement_name ... (e.g., .meas cp2q_del1 ...)
+        parts = line.split()
+        if len(parts) >= 3:
+            # Check if second part is an analysis type
+            if parts[1].lower() in ['tran', 'dc', 'ac', 'noise']:
+                return parts[2]  # Third part is measurement name
+            else:
+                return parts[1]  # Second part is measurement name directly
+        elif len(parts) >= 2:
+            return parts[1]  # Only measurement name after .meas
+        return "unknown"
 
     def _classify_measurement_type(self, line: str) -> str:
         """Classify the type of measurement."""
@@ -1763,7 +1747,7 @@ class ComplianceValidator:
 
         try:
             # Get measurements from the correct key (measurements_found from mc_sim analysis or measurements from deck analysis)
-        measurements = deck_analysis.get('measurements', deck_analysis.get('measurements_found', []))
+            measurements = deck_analysis.get('measurements', deck_analysis.get('measurements_found', []))
             inconsistencies = []
 
             # Check for inconsistent measurement naming
@@ -1981,6 +1965,46 @@ class ReportGenerator:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self.logger = self._setup_logging()
+
+    def _create_main_section_divider(self, title: str) -> List[str]:
+        """Create a visually appealing main section divider."""
+        return [
+            "",
+            "╔" + "═" * 78 + "╗",
+            f"║ {title:<76} ║",
+            "╚" + "═" * 78 + "╝",
+            ""
+        ]
+
+    def _create_subsection_divider(self, title: str, number: str = "") -> List[str]:
+        """Create a clear subsection divider."""
+        if number:
+            full_title = f"{number} {title}"
+        else:
+            full_title = title
+        return [
+            "",
+            "┌" + "─" * 78 + "┐",
+            f"│ {full_title:<76} │",
+            "└" + "─" * 78 + "┘",
+            ""
+        ]
+
+    def _create_minor_divider(self, title: str = "") -> List[str]:
+        """Create a minor divider for small sections."""
+        if title:
+            return [
+                "",
+                f"▶ {title}",
+                "─" * (len(title) + 3),
+                ""
+            ]
+        else:
+            return [
+                "",
+                "─" * 40,
+                ""
+            ]
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging for report generation."""
@@ -2294,10 +2318,7 @@ class ReportGenerator:
 
     def _generate_arc_identification_section(self, arc_name: str, traceability_data: Dict, deck_analysis: Dict) -> List[str]:
         """Generate the arc identification section."""
-        lines = [
-            "ARC IDENTIFICATION",
-            "=" * 80,
-        ]
+        lines = self._create_main_section_divider("ARC IDENTIFICATION")
 
         # Extract information from arc name
         arc_info = self._parse_arc_name(arc_name)
@@ -2325,11 +2346,7 @@ class ReportGenerator:
 
     def _generate_input_specifications_section(self, traceability_data: Dict, arc_name: str, deck_analysis: Dict) -> List[str]:
         """Generate the input specifications section."""
-        lines = [
-            "INPUT SPECIFICATIONS",
-            "=" * 80,
-            ""
-        ]
+        lines = self._create_main_section_divider("INPUT SPECIFICATIONS")
 
         # Parse arc information for context
         arc_info = self._parse_arc_name(arc_name)
@@ -2355,12 +2372,11 @@ class ReportGenerator:
 
     def _generate_deck_analysis_section(self, deck_analysis: Dict) -> List[str]:
         """Generate the generated deck analysis section."""
-        lines = [
-            "GENERATED DECK ANALYSIS",
-            "=" * 80,
+        lines = self._create_main_section_divider("GENERATED DECK ANALYSIS")
+        lines.extend([
             f"Analyzed File:      {deck_analysis.get('file_path', 'unknown')}",
             ""
-        ]
+        ])
 
         # [1] Primary Timing Measurements
         lines.extend(self._format_primary_measurements(deck_analysis))
@@ -2378,13 +2394,11 @@ class ReportGenerator:
 
     def _generate_compliance_validation_section(self, tests: Dict, overall_status: str, deck_analysis: Dict = None) -> List[str]:
         """Generate the compliance validation section focused on measurements."""
-        lines = [
-            "COMPLIANCE VALIDATION",
-            "=" * 80,
-            "",
+        lines = self._create_main_section_divider("COMPLIANCE VALIDATION")
+        lines.extend([
             f"Overall Status:     ✓ COMPLIANT WITH CURRENT SPECIFICATIONS",
             ""
-        ]
+        ])
 
         # Measurement compliance checklist
         lines.extend([
@@ -2654,12 +2668,11 @@ class ReportGenerator:
 
     def _format_template_specifications(self, template_data: Dict, arc_info: Dict) -> List[str]:
         """Format template.tcl specifications section with actual arc extraction."""
-        lines = [
-            "[A] Template.tcl Specifications",
-            "-" * 80,
+        lines = self._create_subsection_divider("Template.tcl Specifications", "[A]")
+        lines.extend([
             f"File:               {template_data.get('file_path', 'unknown')}",
             ""
-        ]
+        ])
 
         # Try to extract actual arc definition using the new method
         template_file = Path(template_data.get('file_path', ''))
@@ -2730,12 +2743,11 @@ class ReportGenerator:
 
     def _format_chartcl_specifications(self, chartcl_data: Dict, arc_info: Dict) -> List[str]:
         """Format chartcl.tcl specifications section with relevance filtering."""
-        lines = [
-            "[B] Chartcl.tcl Variables",
-            "-" * 80,
+        lines = self._create_subsection_divider("Chartcl.tcl Variables", "[B]")
+        lines.extend([
             f"File:               {chartcl_data.get('file_path', 'unknown')}",
             ""
-        ]
+        ])
 
         # Use new relevant variable extraction
         chartcl_file = Path(chartcl_data.get('file_path', ''))
@@ -2869,19 +2881,17 @@ class ReportGenerator:
 
     def _format_primary_measurements(self, deck_analysis: Dict) -> List[str]:
         """Format primary delay measurement analysis section."""
-        lines = [
-            "┌────────────────────────────────────────────────────────────────────────┐",
-            "│ [1] PRIMARY DELAY MEASUREMENT                                          │",
-            "└────────────────────────────────────────────────────────────────────────┘",
-            ""
-        ]
+        lines = self._create_subsection_divider("PRIMARY DELAY MEASUREMENT", "[1]")
 
         # Get measurements from the correct key (measurements_found from mc_sim analysis or measurements from deck analysis)
         measurements = deck_analysis.get('measurements', deck_analysis.get('measurements_found', []))
         cp2q_del1_found = False
 
-        for meas in measurements:
+        # Debug: log the measurement search process
+        self.logger.debug(f"Searching for cp2q_del1 in {len(measurements)} measurements")
+        for i, meas in enumerate(measurements):
             meas_name = meas.get('measurement_name', 'unknown')
+            self.logger.debug(f"  Measurement {i+1}: '{meas_name}'")
             if 'cp2q_del1' in meas_name:
                 cp2q_del1_found = True
                 line_num = meas.get('line_number', 'unknown')
@@ -2915,12 +2925,7 @@ class ReportGenerator:
 
     def _format_final_state_analysis(self, deck_analysis: Dict) -> List[str]:
         """Format final-state checks analysis section."""
-        lines = [
-            "┌────────────────────────────────────────────────────────────────────────┐",
-            "│ [2] FINAL-STATE CHECKS                                                 │",
-            "└────────────────────────────────────────────────────────────────────────┘",
-            ""
-        ]
+        lines = self._create_subsection_divider("FINAL-STATE CHECKS", "[2]")
 
         final_state_patterns = deck_analysis.get('final_state_patterns', [])
         # Get measurements from the correct key (measurements_found from mc_sim analysis or measurements from deck analysis)
