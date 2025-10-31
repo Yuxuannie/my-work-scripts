@@ -300,18 +300,30 @@ class InputTraceabilityEngine:
         """
         Find and extract the EXACT arc definition from template.tcl.
 
+        Handles Synopsys define_arc format:
+        define_arc \
+            -type min_pulse_width \
+            -when "!E&TE" \
+            -vector {Fxxx} \
+            -related_pin CPN \
+            -pin CPN \
+            -probe {Q1 Q} \
+            CELLNAME
+
         Returns:
         {
             'found': True/False,
             'line_start': 1234,
             'line_end': 1240,
-            'raw_text': '  timing() {\n    timing_type: "min_pulse_width";\n    ...\n  }',
+            'raw_text': 'define_arc \\\n    -type min_pulse_width \\\n    ...',
             'parsed_attributes': {
-                'timing_type': 'min_pulse_width',
+                'type': 'min_pulse_width',
                 'related_pin': 'CPN',
-                'when': '!E',
-                'rise_constraint': 'present',
-                'fall_constraint': 'present',
+                'when': '!E&TE',
+                'vector': '{Fxxx}',
+                'pin': 'CPN',
+                'probe': '{Q1 Q}',
+                'cell_name': 'CELLNAME'
             }
         }
         """
@@ -330,111 +342,128 @@ class InputTraceabilityEngine:
             with open(template_file, 'r') as f:
                 lines = f.readlines()
 
-            # Find the cell definition
-            cell_start = None
-            cell_end = None
-            in_cell = False
-            brace_count = 0
-
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-
-                # Look for cell definition
-                if f'cell({cell_name})' in stripped or f'cell \\"{cell_name}\\"' in stripped:
-                    cell_start = i + 1  # 1-based line numbers
-                    in_cell = True
-                    brace_count = 0
-                    continue
-
-                if in_cell:
-                    # Count braces to find cell end
-                    brace_count += stripped.count('{') - stripped.count('}')
-                    if brace_count < 0:
-                        cell_end = i + 1
-                        break
-
-            if not cell_start:
-                result['error'] = f'Cell {cell_name} not found in template.tcl'
-                return result
-
-            result['cell_line_start'] = cell_start
-            result['cell_line_end'] = cell_end
-
-            # Now search for the specific timing arc within the cell
-            arc_start = None
-            arc_end = None
-            in_timing_block = False
-            timing_brace_count = 0
-            found_attributes = {}
-
-            # Search within cell boundaries
-            start_idx = cell_start - 1  # Convert to 0-based
-            end_idx = cell_end - 1 if cell_end else len(lines)
-
-            for i in range(start_idx, min(end_idx, len(lines))):
+            # Look for define_arc commands
+            i = 0
+            while i < len(lines):
                 line = lines[i]
                 stripped = line.strip()
 
-                # Look for timing block start
-                if 'timing()' in stripped and not in_timing_block:
+                # Look for define_arc start
+                if stripped.startswith('define_arc'):
                     arc_start = i + 1  # 1-based line numbers
-                    in_timing_block = True
-                    timing_brace_count = 0
+                    arc_lines = [line]
                     found_attributes = {}
-                    continue
 
-                if in_timing_block:
-                    # Count braces to find timing block end
-                    timing_brace_count += stripped.count('{') - stripped.count('}')
+                    # Collect the complete define_arc command (may span multiple lines with \)
+                    j = i + 1
+                    while j < len(lines):
+                        next_line = lines[j]
+                        arc_lines.append(next_line)
 
-                    # Extract attributes within this timing block
-                    if ':' in stripped:
-                        # Parse attribute: value pairs
-                        if 'timing_type' in stripped:
-                            match = re.search(r'timing_type\s*:\s*"([^"]+)"', stripped)
-                            if match:
-                                found_attributes['timing_type'] = match.group(1)
-                        elif 'related_pin' in stripped:
-                            match = re.search(r'related_pin\s*:\s*"([^"]+)"', stripped)
-                            if match:
-                                found_attributes['related_pin'] = match.group(1)
-                        elif 'when' in stripped:
-                            match = re.search(r'when\s*:\s*"([^"]+)"', stripped)
-                            if match:
-                                found_attributes['when'] = match.group(1)
-                        elif 'rise_constraint' in stripped:
-                            found_attributes['rise_constraint'] = 'present'
-                        elif 'fall_constraint' in stripped:
-                            found_attributes['fall_constraint'] = 'present'
+                        # Check if this line ends the define_arc (no continuation \)
+                        if not next_line.strip().endswith('\\') and next_line.strip():
+                            # This should be the cell name line
+                            arc_end = j + 1
+                            break
+                        j += 1
+                    else:
+                        # Reached end of file without finding end
+                        i += 1
+                        continue
 
-                    if timing_brace_count < 0:
-                        arc_end = i + 1
+                    # Parse the complete define_arc command
+                    full_command = ''.join(arc_lines)
 
-                        # Check if this timing block matches our criteria
-                        matches = True
-                        if arc_type == 'min_pulse_width' and found_attributes.get('timing_type') != 'min_pulse_width':
-                            matches = False
-                        if found_attributes.get('related_pin') != related_pin:
-                            matches = False
-                        # Note: when condition matching is complex, skip for now
+                    # Extract attributes using regex patterns
+                    type_match = re.search(r'-type\s+(\w+)', full_command)
+                    if type_match:
+                        found_attributes['type'] = type_match.group(1)
 
-                        if matches:
-                            # Extract the raw text
-                            raw_lines = lines[arc_start-1:arc_end]
-                            result['raw_text'] = ''.join(raw_lines)
-                            result['line_start'] = arc_start
-                            result['line_end'] = arc_end
-                            result['parsed_attributes'] = found_attributes
-                            result['found'] = True
-                            return result
+                    when_match = re.search(r'-when\s+"([^"]+)"', full_command)
+                    if when_match:
+                        found_attributes['when'] = when_match.group(1)
 
-                        # Reset for next timing block
-                        in_timing_block = False
-                        arc_start = None
-                        arc_end = None
+                    vector_match = re.search(r'-vector\s+\{([^}]+)\}', full_command)
+                    if vector_match:
+                        found_attributes['vector'] = f"{{{vector_match.group(1)}}}"
+
+                    related_pin_match = re.search(r'-related_pin\s+(\w+)', full_command)
+                    if related_pin_match:
+                        found_attributes['related_pin'] = related_pin_match.group(1)
+
+                    pin_match = re.search(r'-pin\s+(\w+)', full_command)
+                    if pin_match:
+                        found_attributes['pin'] = pin_match.group(1)
+
+                    probe_match = re.search(r'-probe\s+\{([^}]+)\}', full_command)
+                    if probe_match:
+                        found_attributes['probe'] = f"{{{probe_match.group(1)}}}"
+
+                    # Extract cell name (last non-empty line that doesn't end with \)
+                    cell_name_line = arc_lines[-1].strip()
+                    if cell_name_line and not cell_name_line.endswith('\\'):
+                        found_attributes['cell_name'] = cell_name_line
+
+                    # Check if this define_arc matches our criteria
+                    matches = True
+
+                    # Check arc type
+                    if arc_type == 'min_pulse_width' and found_attributes.get('type') != 'min_pulse_width':
+                        matches = False
+
+                    # Check related pin
+                    if found_attributes.get('related_pin') != related_pin:
+                        matches = False
+
+                    # Check cell name (use flexible matching - cell name should be contained)
+                    found_cell = found_attributes.get('cell_name', '')
+                    if found_cell and cell_name:
+                        # Try exact match first
+                        if found_cell != cell_name:
+                            # Try partial match (cell_name should be substring of found_cell or vice versa)
+                            if cell_name not in found_cell and found_cell not in cell_name:
+                                matches = False
+                    elif not found_cell:
+                        matches = False
+
+                    # Note: When condition matching is complex due to different formats
+                    # For now, we'll match on type, pin, and cell name
+                    # When condition matching can be added later if needed
+
+                    if matches:
+                        result['found'] = True
+                        result['line_start'] = arc_start
+                        result['line_end'] = arc_end
+                        result['raw_text'] = ''.join(arc_lines)
+                        result['parsed_attributes'] = found_attributes
+                        return result
+
+                    # Continue searching from after this define_arc
+                    i = j + 1
+                else:
+                    i += 1
 
             if not result['found']:
-                result['error'] = f'No matching timing arc found for {arc_type} on {related_pin}'
+                # Provide helpful debug information
+                all_define_arcs = []
+                with open(template_file, 'r') as f:
+                    content = f.read()
+                    define_arc_matches = re.finditer(r'define_arc.*?(?=\n\w|\ndefine_arc|\Z)', content, re.DOTALL)
+                    for match in define_arc_matches:
+                        arc_text = match.group(0)
+                        # Extract basic info for debugging
+                        type_match = re.search(r'-type\s+(\w+)', arc_text)
+                        pin_match = re.search(r'-related_pin\s+(\w+)', arc_text)
+                        cell_match = re.search(r'\n\s*([A-Z][A-Z0-9_]+)\s*$', arc_text)
+
+                        debug_info = {
+                            'type': type_match.group(1) if type_match else 'unknown',
+                            'pin': pin_match.group(1) if pin_match else 'unknown',
+                            'cell': cell_match.group(1) if cell_match else 'unknown'
+                        }
+                        all_define_arcs.append(debug_info)
+
+                result['error'] = f'No matching define_arc found for {arc_type} on {related_pin} in cell {cell_name}. Found {len(all_define_arcs)} define_arc commands: {all_define_arcs[:3]}'
 
         except Exception as e:
             result['error'] = f'Error parsing template.tcl: {e}'
