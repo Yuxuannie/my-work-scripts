@@ -1879,12 +1879,20 @@ class ReportGenerator:
 
         lines.extend([
             f"Deck Name:          {arc_name}",
-            f"Cell Name:          {arc_info.get('cell_name', 'unknown')}",
-            f"Arc Type:           {arc_info.get('arc_type', 'unknown')}",
-            f"Constrained Pin:    {arc_info.get('constrained_pin', 'unknown')}",
-            f"Related Pin:        {arc_info.get('related_pin', 'unknown')}",
-            f"When Condition:     {arc_info.get('when_condition', 'unknown')}",
-            f"Vector:             {arc_info.get('vector', 'unknown')}",
+            "",
+            "Parsed Arc Attributes:",
+            f"  Cell Name:          {arc_info.get('cell_name', 'unknown')}",
+            f"  Arc Type:           {arc_info.get('arc_type', 'unknown')}",
+            f"  Constrained Pin:    {arc_info.get('constrained_pin', 'unknown')} ({arc_info.get('constrained_pin_dir', 'unknown')})",
+            f"  Related Pin:        {arc_info.get('related_pin', 'unknown')} ({arc_info.get('related_pin_dir', 'unknown')})",
+            f"  When Condition:     {arc_info.get('when_condition', 'unknown')}",
+            f"  Table Point:        {arc_info.get('table_point', 'unknown')}",
+            f"  Vector:             {arc_info.get('vector', 'unknown')}",
+            "",
+            "Parsing Metadata:",
+            f"  Parser Used:        Enhanced Arc Name Parser",
+            f"  Parsing Status:     {'SUCCESS' if arc_info.get('cell_name') != 'unknown' else 'PARTIAL'}",
+            f"  Raw Folder Name:    {arc_info.get('raw_folder_name', arc_name)}",
             ""
         ])
 
@@ -2000,28 +2008,148 @@ class ReportGenerator:
         ]
 
     def _parse_arc_name(self, arc_name: str) -> Dict[str, str]:
-        """Parse arc name to extract components."""
+        """
+        Parse arc name to extract components.
+
+        Expected format: {arc_type}_{cell_name}_{constr_pin}_{constr_dir}_{rel_pin}_{rel_dir}_{when_parts}_{table_point}_{vector}
+
+        Example: min_pulse_width_CKLNQOPPLCHMZD2BNPN1SBNPNPN3P48CPD_CPN_rise_CPN_rise_E_noTE_1-2_Rxu0
+        """
         arc_info = {
             'cell_name': 'unknown',
             'arc_type': 'unknown',
             'constrained_pin': 'unknown',
+            'constrained_pin_dir': 'unknown',
             'related_pin': 'unknown',
+            'related_pin_dir': 'unknown',
             'when_condition': 'unknown',
-            'vector': 'unknown'
+            'table_point': 'unknown',
+            'vector': 'unknown',
+            'raw_folder_name': arc_name
         }
 
-        # Try to parse mpw arc format: mpw_CELLNAME_PIN_direction_RELPIN_WHEN_vector
-        if arc_name.startswith('mpw_'):
+        try:
+            # Split by underscore
             parts = arc_name.split('_')
-            if len(parts) >= 6:
+
+            if len(parts) < 6:
+                # Not enough parts for valid arc name
+                return arc_info
+
+            # Identify arc type patterns
+            if parts[0] == 'min' and len(parts) > 2 and parts[1] == 'pulse' and parts[2] == 'width':
+                # Format: min_pulse_width_CELL_PIN_DIR_RELPIN_RELDIR_WHEN_TABLE_VECTOR
                 arc_info['arc_type'] = 'min_pulse_width'
-                arc_info['cell_name'] = parts[1]
-                arc_info['constrained_pin'] = f"{parts[2]} ({parts[3]})"
-                arc_info['related_pin'] = parts[5] if len(parts) > 5 else 'unknown'
-                arc_info['when_condition'] = '_'.join(parts[6:-1]) if len(parts) > 7 else 'unknown'
-                arc_info['vector'] = parts[-1] if len(parts) > 6 else 'unknown'
+                remaining_parts = parts[3:]
+            elif parts[0] == 'max' and len(parts) > 2 and parts[1] == 'pulse' and parts[2] == 'width':
+                arc_info['arc_type'] = 'max_pulse_width'
+                remaining_parts = parts[3:]
+            elif parts[0] in ['setup', 'hold', 'recovery', 'removal']:
+                # Format: setup_CELL_PIN_DIR_RELPIN_RELDIR_WHEN_TABLE_VECTOR
+                arc_info['arc_type'] = parts[0]
+                remaining_parts = parts[1:]
+            elif parts[0] == 'mpw':
+                # Legacy format: mpw_CELL_PIN_DIR_RELPIN_RELDIR_WHEN_TABLE_VECTOR
+                arc_info['arc_type'] = 'min_pulse_width'
+                remaining_parts = parts[1:]
+            else:
+                # Unknown arc type, treat first part as arc type
+                arc_info['arc_type'] = parts[0]
+                remaining_parts = parts[1:]
+
+            if len(remaining_parts) < 5:
+                # Not enough remaining parts
+                return arc_info
+
+            # For the example: CKLNQOPPLCHMZD2BNPN1SBNPNPN3P48CPD_CPN_rise_CPN_rise_E_noTE_1-2_Rxu0
+            # We need to identify where the cell name ends and pin info begins
+
+            # Strategy: Look for direction keywords (rise/fall) to identify pin boundaries
+            direction_keywords = ['rise', 'fall']
+            pin_start_idx = None
+
+            # Find first occurrence of direction keyword - this should be constrained pin direction
+            for i, part in enumerate(remaining_parts):
+                if part in direction_keywords:
+                    # The part before this should be constrained pin
+                    # Everything before constrained pin should be cell name
+                    if i >= 1:
+                        pin_start_idx = i - 1
+                        break
+
+            if pin_start_idx is None or pin_start_idx == 0:
+                # Fallback: assume first part is cell name
+                pin_start_idx = 1
+
+            # Extract cell name (join all parts before pin info)
+            arc_info['cell_name'] = '_'.join(remaining_parts[:pin_start_idx])
+
+            # Extract pin and direction information
+            pin_parts = remaining_parts[pin_start_idx:]
+
+            if len(pin_parts) >= 4:
+                # Expected: PIN DIR RELPIN RELDIR [WHEN...] TABLE VECTOR
+                arc_info['constrained_pin'] = pin_parts[0]
+                arc_info['constrained_pin_dir'] = pin_parts[1]
+                arc_info['related_pin'] = pin_parts[2]
+                arc_info['related_pin_dir'] = pin_parts[3]
+
+                # Everything after the 4 pin/direction fields
+                remaining_fields = pin_parts[4:]
+
+                if len(remaining_fields) >= 3:
+                    # Last part is vector, second to last is table point
+                    arc_info['vector'] = remaining_fields[-1]
+                    arc_info['table_point'] = remaining_fields[-2]
+
+                    # Everything else is when condition
+                    when_parts = remaining_fields[:-2]
+                    arc_info['when_condition'] = self._decode_when_condition(when_parts)
+                elif len(remaining_fields) >= 2:
+                    # Just table and vector
+                    arc_info['table_point'] = remaining_fields[-2]
+                    arc_info['vector'] = remaining_fields[-1]
+                elif len(remaining_fields) >= 1:
+                    # Just vector
+                    arc_info['vector'] = remaining_fields[-1]
+
+        except Exception as e:
+            # If parsing fails, at least preserve the raw name
+            pass
 
         return arc_info
+
+    def _decode_when_condition(self, when_parts: List[str]) -> str:
+        """
+        Decode when condition from arc name parts.
+
+        Examples:
+        - ['E', 'noTE'] → 'E_noTE' (decoded as '!E' if noTE means "not E")
+        - ['SE', '0'] → 'SE_0'
+        - ['SN', '1'] → 'SN_1'
+        """
+        if not when_parts:
+            return 'none'
+
+        when_condition = '_'.join(when_parts)
+
+        # Decode common patterns
+        if len(when_parts) == 2:
+            signal = when_parts[0]
+            modifier = when_parts[1]
+
+            # Handle "no" prefix meaning negation
+            if modifier.startswith('no'):
+                negated_signal = modifier[2:]  # Remove 'no' prefix
+                if negated_signal == signal:
+                    return f'!{signal}'
+                else:
+                    return f'{signal}_!{negated_signal}'
+            else:
+                # Regular signal_value pattern
+                return f'{signal}_{modifier}'
+
+        return when_condition
 
     def _format_template_specifications(self, template_data: Dict) -> List[str]:
         """Format template.tcl specifications section."""
