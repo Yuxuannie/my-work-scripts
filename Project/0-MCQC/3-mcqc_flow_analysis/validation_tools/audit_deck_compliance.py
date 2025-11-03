@@ -58,15 +58,20 @@ class InputTraceabilityEngine:
         self.verbose = verbose
         self.logger = self._setup_logging()
 
-        # Input source tracking
-        self.template_inputs = {}
-        self.chartcl_inputs = {}
-        self.globals_inputs = {}
-        self.python_logic_signatures = {}
+    def normalize_when_condition(self, when_str: str) -> str:
+        """
+        Normalize when condition for comparison by removing all whitespace.
 
-        # Traceability mappings
-        self.input_to_output_map = defaultdict(list)
-        self.missing_specifications = defaultdict(list)
+        Examples:
+        - "E & !TE" → "E&!TE"
+        - "D & SE & !SI" → "D&SE&!SI"
+        - " !RST " → "!RST"
+
+        Use this for BOTH parsed and template when conditions before comparison.
+        """
+        if not when_str:
+            return ""
+        return when_str.replace(" ", "").strip()
 
     def _setup_logging(self) -> logging.Logger:
         """Setup logging for traceability analysis."""
@@ -82,7 +87,8 @@ class InputTraceabilityEngine:
         return logger
 
     def trace_arc_inputs(self, arc_folder: Path, template_file: Optional[Path] = None,
-                         chartcl_file: Optional[Path] = None, globals_file: Optional[Path] = None) -> Dict[str, Any]:
+                         chartcl_file: Optional[Path] = None, globals_file: Optional[Path] = None,
+                         chartcl_verbose: bool = False) -> Dict[str, Any]:
         """
         Trace ALL inputs that contributed to this arc's deck generation.
 
@@ -120,7 +126,7 @@ class InputTraceabilityEngine:
             traceability['input_sources']['template'] = self._parse_template_inputs(template_file_to_use)
 
         if chartcl_file_to_use and chartcl_file_to_use.exists():
-            traceability['input_sources']['chartcl'] = self._parse_chartcl_inputs(chartcl_file_to_use)
+            traceability['input_sources']['chartcl'] = self._parse_chartcl_inputs(chartcl_file_to_use, chartcl_verbose)
 
         for globals_file_item in globals_files:
             globals_key = f"globals_{globals_file_item.name}"
@@ -205,12 +211,13 @@ class InputTraceabilityEngine:
             'when_conditions': self._extract_when_conditions_from_template(template_file)
         }
 
-    def _parse_chartcl_inputs(self, chartcl_file: Path) -> Dict[str, Any]:
+    def _parse_chartcl_inputs(self, chartcl_file: Path, chartcl_verbose: bool = False) -> Dict[str, Any]:
         """Parse chartcl.tcl to extract configuration settings using robust file parsing."""
 
         return {
             'file_path': str(chartcl_file),
             'parser_used': 'robust_file_parsing',
+            'chartcl_verbose': chartcl_verbose,  # Store the verbose flag for later use
             'raw_lines': self._extract_key_chartcl_lines(chartcl_file),
             'measurements_config': self._extract_chartcl_measurements(chartcl_file),
             'timing_config': self._extract_chartcl_timing(chartcl_file),
@@ -432,13 +439,14 @@ class InputTraceabilityEngine:
                         found_when = found_attributes.get('when', '')
                         parsed_when = arc_info.get('when_condition', '')
                         if found_when and parsed_when:
-                            # Normalize when conditions for comparison
-                            normalized_found = found_when.replace('&', ' & ').replace('!', '!')
-                            normalized_parsed = parsed_when.replace('&', ' & ').replace('!', '!')
+                            # Normalize BOTH when conditions for comparison
+                            normalized_found = self.normalize_when_condition(found_when)
+                            normalized_parsed = self.normalize_when_condition(parsed_when)
                             if normalized_found != normalized_parsed:
-                                # Try basic matching without spaces
-                                if found_when.replace('&', '').replace('!', '') != parsed_when.replace('&', '').replace('!', ''):
-                                    match_reasons.append(f"When condition mismatch: expected {parsed_when}, found {found_when}")
+                                match_reasons.append(f"When condition mismatch: expected '{parsed_when}' (normalized: '{normalized_parsed}'), found '{found_when}' (normalized: '{normalized_found}')")
+                            else:
+                                # Log successful normalization for verification
+                                self.logger.debug(f"When condition match after normalization: '{parsed_when}' → '{normalized_parsed}' == '{found_when}' → '{normalized_found}'")
 
                         # Check vector (loosened criteria - log mismatch but don't fail match)
                         found_vector = found_attributes.get('vector', '')
@@ -524,7 +532,7 @@ class InputTraceabilityEngine:
 
         return key_lines
 
-    def extract_relevant_chartcl_vars(self, chartcl_file: Path, arc_type: str, cell_name: str) -> Dict:
+    def extract_relevant_chartcl_vars(self, chartcl_file: Path, arc_type: str, cell_name: str, verbose: bool = False) -> Dict:
         """
         Extract ONLY the char.tcl variables relevant to this specific arc.
 
@@ -558,56 +566,62 @@ class InputTraceabilityEngine:
                             'raw_line': stripped
                         }
 
-            # Filter based on arc type relevance
-            if arc_type == 'min_pulse_width':
-                # Find ALL MPW and constraint-related variables (not just predefined list)
+            if verbose:
+                # verbose=True: Show all constraint-related variables (current behavior)
                 for var_name, var_info in all_vars.items():
                     var_lower = var_name.lower()
 
-                    # MPW-specific patterns
-                    if any(pattern in var_lower for pattern in ['mpw', 'pulse_width', 'min_pulse']):
-                        relevant_vars[var_name] = {
-                            **var_info,
-                            'usage': f'MPW-specific setting: {var_name}',
-                            'relevance': 'Arc type specific (min_pulse_width)'
-                        }
-
-                    # Constraint-related patterns
-                    elif any(pattern in var_lower for pattern in ['constraint', 'threshold']):
-                        if 'timing' in var_lower or 'input' in var_lower or 'output' in var_lower:
-                            relevant_vars[var_name] = {
-                                **var_info,
-                                'usage': f'Constraint/threshold setting: {var_name}',
-                                'relevance': 'Constraint specific (timing-related)'
-                            }
-
-            # Find ALL constraint-related variables (not just predefined list)
-            for var_name, var_info in all_vars.items():
-                if var_name not in relevant_vars:  # Don't duplicate
-                    var_lower = var_name.lower()
-
                     # Catch all constraint-related variables
-                    if any(pattern in var_lower for pattern in ['constraint', 'glitch', 'threshold']):
-                        if any(timing_pattern in var_lower for timing_pattern in ['slew', 'delay', 'setup', 'hold', 'recovery', 'removal', 'skew', 'period']):
-                            relevant_vars[var_name] = {
-                                **var_info,
-                                'usage': f'Constraint/timing setting: {var_name}',
-                                'relevance': 'Constraint specific (timing-related)'
-                            }
-                        elif any(pattern in var_lower for pattern in ['input', 'output', 'voltage', 'temperature', 'load']):
-                            relevant_vars[var_name] = {
-                                **var_info,
-                                'usage': f'Constraint threshold: {var_name}',
-                                'relevance': 'Constraint specific (threshold)'
-                            }
-
-                    # General measurement variables
-                    elif any(pattern in var_lower for pattern in ['input_threshold', 'output_threshold', 'timing_threshold']):
+                    if any(pattern in var_lower for pattern in ['constraint', 'glitch', 'threshold', 'mpw', 'pulse_width', 'min_pulse']):
                         relevant_vars[var_name] = {
                             **var_info,
-                            'usage': f'General measurement threshold: {var_name}',
-                            'relevance': 'General (applies to all arcs)'
+                            'usage': f'Constraint-related setting: {var_name}',
+                            'relevance': 'Constraint/timing related'
                         }
+            else:
+                # verbose=False: Show ONLY arc-type specific variables (concise mode)
+                if arc_type == 'min_pulse_width':
+                    # Show only MPW-specific variables
+                    for var_name, var_info in all_vars.items():
+                        var_lower = var_name.lower()
+                        if any(pattern in var_lower for pattern in ['mpw_input_threshold']):  # Only the most specific one
+                            relevant_vars[var_name] = {
+                                **var_info,
+                                'usage': f'MPW-specific setting: {var_name}',
+                                'relevance': 'Arc type specific (min_pulse_width)'
+                            }
+                elif arc_type == 'setup':
+                    # Show only setup-specific variables
+                    for var_name, var_info in all_vars.items():
+                        var_lower = var_name.lower()
+                        if 'setup' in var_lower:
+                            relevant_vars[var_name] = {
+                                **var_info,
+                                'usage': f'Setup-specific setting: {var_name}',
+                                'relevance': 'Arc type specific (setup)'
+                            }
+                elif arc_type == 'hold':
+                    # Show only hold-specific variables
+                    for var_name, var_info in all_vars.items():
+                        var_lower = var_name.lower()
+                        if 'hold' in var_lower:
+                            relevant_vars[var_name] = {
+                                **var_info,
+                                'usage': f'Hold-specific setting: {var_name}',
+                                'relevance': 'Arc type specific (hold)'
+                            }
+
+            # For backward compatibility, if no arc-specific vars found in concise mode, show at least one constraint var
+            if not verbose and not relevant_vars:
+                for var_name, var_info in all_vars.items():
+                    var_lower = var_name.lower()
+                    if any(pattern in var_lower for pattern in ['constraint', 'threshold']):
+                        relevant_vars[var_name] = {
+                            **var_info,
+                            'usage': f'General constraint setting: {var_name}',
+                            'relevance': 'General constraint'
+                        }
+                        break  # Only show the first one found
 
             # Cell-specific overrides (look for variables containing cell name)
             cell_specific = {}
@@ -1967,42 +1981,42 @@ class ReportGenerator:
         self.logger = self._setup_logging()
 
     def _create_main_section_divider(self, title: str) -> List[str]:
-        """Create a visually appealing main section divider."""
+        """Create a main section divider using only basic ASCII characters."""
+        width = 80
         return [
             "",
-            "╔" + "═" * 78 + "╗",
-            f"║ {title:<76} ║",
-            "╚" + "═" * 78 + "╝",
+            "=" * width,
+            title.center(width),
+            "=" * width,
             ""
         ]
 
     def _create_subsection_divider(self, title: str, number: str = "") -> List[str]:
-        """Create a clear subsection divider."""
+        """Create a subsection divider using only basic ASCII characters."""
         if number:
             full_title = f"{number} {title}"
         else:
             full_title = title
+        width = 80
         return [
             "",
-            "┌" + "─" * 78 + "┐",
-            f"│ {full_title:<76} │",
-            "└" + "─" * 78 + "┘",
+            full_title,
+            "-" * width,
             ""
         ]
 
     def _create_minor_divider(self, title: str = "") -> List[str]:
-        """Create a minor divider for small sections."""
+        """Create a minor divider using only basic ASCII characters."""
         if title:
             return [
                 "",
-                f"▶ {title}",
-                "─" * (len(title) + 3),
+                title,
+                "-" * len(title),
                 ""
             ]
         else:
             return [
                 "",
-                "─" * 40,
                 ""
             ]
 
@@ -2402,9 +2416,8 @@ class ReportGenerator:
 
         # Measurement compliance checklist
         lines.extend([
-            "┌────────────────────────────────────────────────────────────────────────┐",
-            "│ SPECIFICATION COMPLIANCE CHECKLIST                                     │",
-            "└────────────────────────────────────────────────────────────────────────┘",
+            "SPECIFICATION COMPLIANCE CHECKLIST",
+            "=" * 80,
             "",
             "Template.tcl Requirements:"
         ])
@@ -2460,9 +2473,9 @@ class ReportGenerator:
         failed_checks = required_checks - passed_checks
 
         lines.extend([
-            "┌────────────────────────────────────────────────────────────────────────┐",
-            "│ COMPLIANCE SUMMARY                                                     │",
-            "└────────────────────────────────────────────────────────────────────────┘",
+            "",
+            "COMPLIANCE SUMMARY",
+            "=" * 80,
             "",
             f"Required Checks:        {required_checks}",
             f"Checks Passed:          {passed_checks} ({int(passed_checks/required_checks*100)}%)",
@@ -2477,9 +2490,9 @@ class ReportGenerator:
 
         # Future validation section
         lines.extend([
-            "┌────────────────────────────────────────────────────────────────────────┐",
-            "│ FUTURE VALIDATION (When Specifications Added)                         │",
-            "└────────────────────────────────────────────────────────────────────────┘",
+            "",
+            "FUTURE VALIDATION (When Specifications Added)",
+            "=" * 80,
             "",
             "If template.tcl is enhanced with:",
             "  • final_state_check: true      → Will check for final_state measurements",
@@ -2694,7 +2707,7 @@ class ReportGenerator:
                     f"Arc Definition:     Line {arc_def['line_start']}-{arc_def['line_end']}",
                     "",
                     "Extracted Arc Definition from Template.tcl:",
-                    "┌────────────────────────────────────────────────────────────────────────┐"
+                    "-" * 40
                 ])
 
                 # Format the raw text with line numbers
@@ -2702,10 +2715,10 @@ class ReportGenerator:
                 for i, line in enumerate(raw_lines):
                     if line.strip():
                         line_num = arc_def['line_start'] + i
-                        lines.append(f"│ {line:<66} [Line {line_num:>4}] │")
+                        lines.append(f"  {line} [Line {line_num}]")
 
                 lines.extend([
-                    "└────────────────────────────────────────────────────────────────────────┘",
+                    "-" * 40,
                     "",
                     "Parsed Attributes Found in Template.tcl:"
                 ])
@@ -2756,12 +2769,13 @@ class ReportGenerator:
             arc_type = arc_info.get('arc_type', 'unknown')
 
             tracer = InputTraceabilityEngine()
-            relevant_vars = tracer.extract_relevant_chartcl_vars(chartcl_file, arc_type, cell_name)
+            chartcl_verbose = chartcl_data.get('chartcl_verbose', False)  # Get the stored verbose flag
+            relevant_vars = tracer.extract_relevant_chartcl_vars(chartcl_file, arc_type, cell_name, chartcl_verbose)
 
             if relevant_vars.get('relevant_vars'):
                 lines.extend([
                     "Relevant Variables for this Arc:",
-                    "┌────────────────────────────────────────────────────────────────────────┐"
+                    "-" * 40
                 ])
 
                 for i, (var_name, var_info) in enumerate(relevant_vars['relevant_vars'].items(), 1):
@@ -2771,26 +2785,34 @@ class ReportGenerator:
                     relevance = var_info.get('relevance', 'Unknown relevance')
 
                     lines.extend([
-                        f"│ [{i}] {var_name:<40} [Line {line_num:>4}]        │",
-                        f"│     Value:          {value:<46} │",
-                        f"│     Usage:          {usage:<46} │",
-                        f"│     Applied to:     {relevance:<46} │"
+                        f"  [{i}] {var_name} [Line {line_num}]",
+                        f"      Value:          {value}",
+                        f"      Usage:          {usage}",
+                        f"      Applied to:     {relevance}"
                     ])
 
                     if i < len(relevant_vars['relevant_vars']):
-                        lines.append("│                                                                        │")
+                        lines.append("")
 
                 lines.extend([
-                    "└────────────────────────────────────────────────────────────────────────┘",
+                    "-" * 40,
                     ""
                 ])
 
                 suppressed = relevant_vars.get('suppressed_count', 0)
                 if suppressed > 0:
-                    lines.extend([
-                        "Variables NOT Relevant to this Arc:",
-                        f"  (Suppressed: {suppressed} other char.tcl variables not applicable to {arc_type} arcs)",
-                        ""
+                    if chartcl_verbose:
+                        lines.extend([
+                            "Variables NOT Relevant to this Arc:",
+                            f"  (Note: All {relevant_vars.get('total_vars_in_file', 0)} variables shown due to --chartcl-verbose flag)",
+                            ""
+                        ])
+                    else:
+                        lines.extend([
+                            "Variables NOT Relevant to this Arc:",
+                            f"  (Suppressed: {suppressed} other char.tcl variables not applicable to {arc_type} arcs)",
+                            f"  (Use --chartcl-verbose to show all {relevant_vars.get('total_vars_in_file', 0)} char.tcl variables)",
+                            ""
                     ])
             else:
                 lines.extend([
@@ -2986,12 +3008,7 @@ class ReportGenerator:
 
     def _format_monitoring_cycles_analysis(self, deck_analysis: Dict) -> List[str]:
         """Format monitoring cycles (secondary measurements) analysis section."""
-        lines = [
-            "┌────────────────────────────────────────────────────────────────────────┐",
-            "│ [3] MONITORING CYCLES (Secondary Measurements)                         │",
-            "└────────────────────────────────────────────────────────────────────────┘",
-            ""
-        ]
+        lines = self._create_subsection_divider("MONITORING CYCLES (Secondary Measurements)", "[3]")
 
         # Get measurements from the correct key (measurements_found from mc_sim analysis or measurements from deck analysis)
         measurements = deck_analysis.get('measurements', deck_analysis.get('measurements_found', []))
@@ -3031,12 +3048,7 @@ class ReportGenerator:
 
     def _format_measurement_nodes_analysis(self, deck_analysis: Dict) -> List[str]:
         """Format measurement nodes analysis section."""
-        lines = [
-            "┌────────────────────────────────────────────────────────────────────────┐",
-            "│ [4] MEASUREMENT NODES                                                  │",
-            "└────────────────────────────────────────────────────────────────────────┘",
-            ""
-        ]
+        lines = self._create_subsection_divider("MEASUREMENT NODES", "[4]")
 
         # Analyze internal node usage
         internal_nodes = deck_analysis.get('internal_nodes', [])
@@ -3227,6 +3239,11 @@ Examples:
         help='Enable verbose logging'
     )
     parser.add_argument(
+        '--chartcl-verbose',
+        action='store_true',
+        help='Show all char.tcl variables (default: show only arc-specific)'
+    )
+    parser.add_argument(
         '--csv_only',
         action='store_true',
         help='Generate only CSV summary, skip detailed YAML reports'
@@ -3283,7 +3300,8 @@ Examples:
                 arc_folder,
                 template_file=args.template_file,
                 chartcl_file=args.chartcl_file,
-                globals_file=args.globals_file
+                globals_file=args.globals_file,
+                chartcl_verbose=getattr(args, 'chartcl_verbose', False)
             )
 
             # Step 2: Analyze mc_sim.sp deck
