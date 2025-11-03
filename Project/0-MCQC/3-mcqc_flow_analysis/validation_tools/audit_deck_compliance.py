@@ -381,14 +381,23 @@ class InputTraceabilityEngine:
                     # Parse the complete define_arc command
                     full_command = ''.join(arc_lines)
 
+                    # DEBUG: Log the raw define_arc content
+                    self.logger.debug(f"Processing define_arc block at lines {arc_start}-{arc_end}:")
+                    self.logger.debug(f"Raw content: {repr(full_command)}")
+
                     # Extract attributes using regex patterns
                     type_match = re.search(r'-type\s+(\w+)', full_command)
                     if type_match:
                         found_attributes['type'] = type_match.group(1)
+                        self.logger.debug(f"Extracted type: {found_attributes['type']}")
 
                     when_match = re.search(r'-when\s+"([^"]+)"', full_command)
                     if when_match:
                         found_attributes['when'] = when_match.group(1)
+                        self.logger.debug(f"Extracted when condition: '{found_attributes['when']}'")
+                        self.logger.debug(f"Raw when match: {repr(when_match.group(0))}")
+                    else:
+                        self.logger.debug(f"No when condition found in: {repr(full_command)}")
 
                     vector_match = re.search(r'-vector\s+\{([^}]+)\}', full_command)
                     if vector_match:
@@ -415,6 +424,11 @@ class InputTraceabilityEngine:
                     matches = True
                     match_reasons = []
 
+                    # DEBUG: Log what we're trying to match
+                    self.logger.debug(f"Attempting to match arc with criteria:")
+                    self.logger.debug(f"  Looking for: cell_name='{cell_name}', arc_type='{arc_type}', related_pin='{related_pin}', when_condition='{when_condition}'")
+                    self.logger.debug(f"  Found in template: {found_attributes}")
+
                     # Check arc type (REQUIRED)
                     if arc_type == 'min_pulse_width' and found_attributes.get('type') != 'min_pulse_width':
                         matches = False
@@ -437,16 +451,31 @@ class InputTraceabilityEngine:
 
                         # Check when condition (if specified, should match)
                         found_when = found_attributes.get('when', '')
-                        parsed_when = arc_info.get('when_condition', '')
+                        parsed_when = arc_info.get('when_condition', '') if arc_info else when_condition
+
+                        self.logger.debug(f"When condition comparison:")
+                        self.logger.debug(f"  Found in template: '{found_when}' (raw)")
+                        self.logger.debug(f"  Expected from arc: '{parsed_when}' (raw)")
+
                         if found_when and parsed_when:
                             # Normalize BOTH when conditions for comparison
                             normalized_found = self.normalize_when_condition(found_when)
                             normalized_parsed = self.normalize_when_condition(parsed_when)
+
+                            self.logger.debug(f"  Found normalized: '{normalized_found}'")
+                            self.logger.debug(f"  Expected normalized: '{normalized_parsed}'")
+
                             if normalized_found != normalized_parsed:
+                                self.logger.debug(f"  MISMATCH: '{normalized_found}' != '{normalized_parsed}'")
                                 match_reasons.append(f"When condition mismatch: expected '{parsed_when}' (normalized: '{normalized_parsed}'), found '{found_when}' (normalized: '{normalized_found}')")
+                                matches = False
                             else:
                                 # Log successful normalization for verification
-                                self.logger.debug(f"When condition match after normalization: '{parsed_when}' → '{normalized_parsed}' == '{found_when}' → '{normalized_found}'")
+                                self.logger.debug(f"  MATCH: '{normalized_found}' == '{normalized_parsed}'")
+                        elif found_when or parsed_when:
+                            self.logger.debug(f"  Only one when condition specified - may still match if other criteria met")
+                        else:
+                            self.logger.debug(f"  No when conditions to compare")
 
                         # Check vector (loosened criteria - log mismatch but don't fail match)
                         found_vector = found_attributes.get('vector', '')
@@ -471,7 +500,14 @@ class InputTraceabilityEngine:
                     # Store match debug info
                     found_attributes['match_reasons'] = match_reasons
 
+                    self.logger.debug(f"Arc matching result: {'MATCH' if matches else 'NO MATCH'}")
+                    if not matches:
+                        self.logger.debug(f"  Reasons for no match: {match_reasons}")
+
                     if matches:
+                        self.logger.info(f"Successfully matched arc at lines {arc_start}-{arc_end}")
+                        self.logger.info(f"  Template when condition: '{found_attributes.get('when', 'none')}'")
+                        self.logger.info(f"  Parsed when condition: '{parsed_when if 'parsed_when' in locals() else when_condition}'")
                         result['found'] = True
                         result['line_start'] = arc_start
                         result['line_end'] = arc_end
