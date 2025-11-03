@@ -2706,12 +2706,21 @@ class ReportGenerator:
         when_condition = '_'.join(when_parts)
 
         # Apply transformations
-        # Replace "not" with "!" (word boundary aware)
-        # Handle both "notSIGNAL" and "SIGNAL_notOTHER" patterns
-        result = re.sub(r'not(\w+)', r'!\1', when_condition)
+        # First split by underscore to handle each part individually
+        parts = when_condition.split('_')
 
-        # Replace underscore with " & " for logical AND
-        result = result.replace('_', ' & ')
+        # Process each part to replace "not" prefix with "!"
+        processed_parts = []
+        for part in parts:
+            if part.startswith('not') and len(part) > 3:
+                # Replace "not" prefix with "!"
+                processed_part = '!' + part[3:]
+            else:
+                processed_part = part
+            processed_parts.append(processed_part)
+
+        # Join with " & " for logical AND
+        result = ' & '.join(processed_parts)
 
         return result
 
