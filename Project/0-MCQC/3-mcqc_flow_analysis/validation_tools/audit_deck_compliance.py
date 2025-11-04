@@ -3817,7 +3817,19 @@ def process_single_arc(arc_data):
 
             # Extract template data for alignment analysis
             if template_match_result and template_match_result.success:
-                template_data = template_match_result.match_details or {}
+                # Get template data from cached template structure
+                cached_template = tracer.get_cached_template_data(template_file_to_use)
+                arcs_by_cell = cached_template.get('arcs_by_cell', {})
+                cell_name = arc_info.get('cell_name', '')
+
+                # Find the matching arc definition
+                template_data = {}
+                if cell_name in arcs_by_cell:
+                    for arc_def in arcs_by_cell[cell_name]:
+                        if (arc_def.get('type') == arc_info.get('arc_type') and
+                            arc_def.get('related_pin') == arc_info.get('related_pin')):
+                            template_data = arc_def
+                            break
         template_time = time.time() - t3
 
         # Step 4: Alignment analysis
