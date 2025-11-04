@@ -1310,13 +1310,49 @@ class SPICEDeckAnalyzer:
         }
 
         try:
+            # PERFORMANCE OPTIMIZATION: Stream processing instead of loading entire file
             with open(deck_path, 'r') as f:
-                lines = f.readlines()
-                analysis['total_lines'] = len(lines)
+                line_count = 0
+                measurement_count = 0
 
-                # Analyze each line
-                for line_num, line in enumerate(lines, 1):
-                    self._analyze_line(line, line_num, analysis)
+                # Stream line-by-line for memory efficiency
+                for line_num, line in enumerate(f, 1):
+                    line_count += 1
+
+                    # FAST PATH: Skip empty lines early
+                    stripped_line = line.strip()
+                    if not stripped_line:
+                        continue
+
+                    # FAST PATH: Count comments quickly
+                    if stripped_line.startswith('*'):
+                        analysis['comment_lines'] += 1
+                        # Only check for signatures if needed
+                        if any(sig in stripped_line for sig in ['POST_PROC', 'PYTHON_GEN', 'AUTO_GEN', 'MCQC_TOOL']):
+                            analysis['post_processing_signatures'].append({
+                                'line_number': line_num,
+                                'signature': stripped_line,
+                                'type': 'comment_signature'
+                            })
+                        continue
+
+                    # FAST PATH: Optimized measurement detection
+                    if stripped_line.lower().startswith('.meas'):
+                        analysis['measurement_lines'] += 1
+                        measurement_count += 1
+                        self._analyze_measurement_fast(stripped_line, line_num, analysis)
+                        continue
+
+                    # FAST PATH: Quick subcircuit detection
+                    if stripped_line.lower().startswith('x') and len(stripped_line.split()) >= 2:
+                        self._analyze_subcircuit_call_fast(stripped_line, line_num, analysis)
+                        continue
+
+                    # Only do expensive internal node analysis if line contains dots
+                    if '.' in stripped_line and not stripped_line.startswith('.'):
+                        self._analyze_internal_nodes_fast(stripped_line, line_num, analysis)
+
+                analysis['total_lines'] = line_count
 
                 # Generate summary statistics
                 analysis['summary'] = self._generate_summary(analysis)
@@ -1535,6 +1571,100 @@ class SPICEDeckAnalyzer:
             })
 
         return cross_points
+
+    # PERFORMANCE OPTIMIZED ANALYSIS METHODS
+    def _analyze_measurement_fast(self, line: str, line_num: int, analysis: Dict[str, Any]) -> None:
+        """Fast measurement analysis with reduced overhead."""
+
+        # Extract measurement name efficiently
+        parts = line.split()
+        measurement_name = 'unknown'
+        if len(parts) >= 3:
+            # Check if second part is analysis type (tran, dc, ac)
+            if parts[1].lower() in ['tran', 'dc', 'ac', 'noise']:
+                measurement_name = parts[2] if len(parts) > 2 else 'unknown'
+            else:
+                measurement_name = parts[1]
+        elif len(parts) >= 2:
+            measurement_name = parts[1]
+
+        # Quick measurement type classification
+        line_lower = line.lower()
+        if 'delay' in line_lower or 'tpd' in line_lower or 'tplh' in line_lower or 'tphl' in line_lower:
+            measurement_type = 'delay'
+        elif 'power' in line_lower or 'current' in line_lower or 'energy' in line_lower:
+            measurement_type = 'power'
+        elif 'final_state' in line_lower:
+            measurement_type = 'final_state'
+        elif 'cp2q' in line_lower:
+            measurement_type = 'cp2q'
+        elif 'voltage' in line_lower or 'cross' in line_lower:
+            measurement_type = 'voltage'
+        else:
+            measurement_type = 'other'
+
+        # Create simplified measurement record
+        measurement = {
+            'line_number': line_num,
+            'measurement_name': measurement_name,
+            'type': measurement_type,
+            'signals': self._extract_target_signals(line),  # Reuse existing method
+            'when_conditions': self._extract_when_conditions(line),  # Reuse existing method
+            'timing_events': [],
+            'cross_points': []
+        }
+
+        # Extract timing info only if keywords present (avoid expensive regex)
+        if any(keyword in line_lower for keyword in ['when', 'cross', 'rise', 'fall']):
+            measurement['timing_events'] = self._extract_timing_events(line)
+            measurement['cross_points'] = self._extract_cross_points(line)
+
+        analysis['measurements'].append(measurement)
+        analysis['measurement_types'][measurement_type] += 1
+
+        # Categorize by pattern (fast checks)
+        if measurement_type == 'final_state':
+            analysis['final_state_patterns'].append(measurement)
+        elif measurement_type == 'cp2q':
+            analysis['cp2q_patterns'].append(measurement)
+        elif measurement_type == 'delay':
+            analysis['delay_patterns'].append(measurement)
+        elif measurement_type == 'power':
+            analysis['power_patterns'].append(measurement)
+
+    def _analyze_subcircuit_call_fast(self, line: str, line_num: int, analysis: Dict[str, Any]) -> None:
+        """Fast subcircuit analysis with minimal processing."""
+
+        parts = line.split()
+        if len(parts) >= 2:
+            analysis['subcircuit_calls'].append({
+                'line_number': line_num,
+                'instance_name': parts[0],
+                'subcircuit_name': parts[-1],
+                'connection_count': len(parts) - 2
+            })
+
+    def _analyze_internal_nodes_fast(self, line: str, line_num: int, analysis: Dict[str, Any]) -> None:
+        """Fast internal node analysis with simple pattern matching."""
+
+        # Only search for patterns if line is likely to contain them
+        if line.count('.') > 3:  # Likely to have many internal nodes
+            return  # Skip expensive analysis for very complex lines
+
+        # Simple dot pattern check without regex
+        words = line.split()
+        for word in words:
+            if '.' in word and not word.startswith('.'):
+                # Simple validation: word.word pattern
+                if word.count('.') == 1:
+                    parts = word.split('.')
+                    if len(parts) == 2 and parts[0].isalnum() and parts[1]:
+                        analysis['internal_nodes'].append({
+                            'line_number': line_num,
+                            'node_reference': word,
+                            'simple_pattern': True
+                        })
+                        break  # Only record first one per line for performance
 
     def _generate_summary(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Generate analysis summary statistics."""
