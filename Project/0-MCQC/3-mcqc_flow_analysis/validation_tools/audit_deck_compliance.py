@@ -3332,9 +3332,7 @@ Examples:
                 if template_file_path.exists():
                     # Parse arc name to get matching criteria
                     arc_name = arc_folder.name
-                    from audit_deck_compliance import ReportGenerator
-                    report_gen = ReportGenerator()
-                    arc_info = report_gen._parse_arc_name(arc_name)
+                    arc_info = reporter._parse_arc_name(arc_name)
 
                     template_match_result = tracer.extract_template_arc_definition(
                         template_file_path,
