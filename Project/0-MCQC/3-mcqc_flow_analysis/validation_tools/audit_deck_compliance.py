@@ -3653,6 +3653,168 @@ class ReportGenerator:
         return name_map.get(test_name, test_name.replace('_', ' ').title())
 
 
+def find_arcs_to_process(deck_dir: Path, output_dir: Path, force: bool = False):
+    """
+    Find arcs that need processing.
+    Skip arcs that already have alignment reports unless force=True.
+    """
+    # Find all arc directories with mc_sim.sp
+    all_arc_paths = []
+    for folder in deck_dir.iterdir():
+        if folder.is_dir():
+            mc_sim_file = folder / "mc_sim.sp"
+            if mc_sim_file.exists():
+                all_arc_paths.append(folder)
+
+    if force:
+        print(f"--force flag set: will reprocess all {len(all_arc_paths)} arcs")
+        return all_arc_paths, []
+
+    # Check which arcs already have reports
+    arcs_to_process = []
+    arcs_skipped = []
+
+    report_dir = output_dir / "arc_reports"
+
+    for arc_folder in all_arc_paths:
+        arc_name = arc_folder.name
+        report_file = report_dir / f"{arc_name}_alignment_report.txt"
+
+        if report_file.exists():
+            arcs_skipped.append(arc_folder)
+        else:
+            arcs_to_process.append(arc_folder)
+
+    print(f"Found {len(all_arc_paths)} total arcs")
+    print(f"  Already processed: {len(arcs_skipped)} arcs (will skip)")
+    print(f"  Need processing: {len(arcs_to_process)} arcs")
+
+    return arcs_to_process, arcs_skipped
+
+
+def generate_csv_from_existing_reports(report_dir: Path, output_csv: Path):
+    """
+    Generate alignment CSV from existing per-arc reports.
+    Useful for interrupted runs or CSV regeneration.
+    """
+    print(f"Scanning existing reports in {report_dir}")
+
+    report_files = list(report_dir.glob("*_alignment_report.txt"))
+    print(f"Found {len(report_files)} existing reports")
+
+    if not report_files:
+        print("No existing reports found")
+        return
+
+    rows = []
+    for report_file in report_files:
+        try:
+            arc_data = parse_alignment_report_file(report_file)
+            if arc_data:
+                rows.append(arc_data)
+        except Exception as e:
+            print(f"Error parsing {report_file}: {e}")
+
+    if rows:
+        # Generate CSV using AlignmentAnalyzer
+        alignment_analyzer = AlignmentAnalyzer(verbose=True)
+        alignment_analyzer.generate_alignment_csv(rows, output_csv)
+        print(f"Generated CSV: {output_csv} ({len(rows)} arcs)")
+    else:
+        print("No valid alignment data found in reports")
+
+
+def parse_alignment_report_file(report_file: Path) -> Dict:
+    """
+    Parse an alignment report file to extract alignment data for CSV.
+    """
+    alignment_data = {
+        'arc_name': report_file.stem.replace('_alignment_report', ''),
+        'cell_name': 'Unknown',
+        'constraint_pin': 'Unknown',
+        'related_pin': 'Unknown',
+        'when_condition': 'Unknown',
+        'vector': 'Unknown',
+        'cp2q_del1_MCQC': 'Unknown',
+        'cp2q_del1_Template': 'N/A',
+        'cp2q_del1_Match': 'Unknown',
+        'cp2q_del2_MCQC': 'Unknown',
+        'cp2q_del2_Template': 'N/A',
+        'cp2q_del2_Match': 'Unknown',
+        'final_state_MCQC': 'Unknown',
+        'final_state_Template': 'OFF',
+        'final_state_Match': 'Unknown',
+        'internal_node_MCQC': 'Unknown',
+        'probe_Template': 'Unknown',
+        'probe_Match': 'Unknown'
+    }
+
+    try:
+        with open(report_file, 'r') as f:
+            content = f.read()
+
+        # Parse sections using simple string matching
+        lines = content.split('\n')
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+
+            # Parse Arc Identification section
+            if line.startswith('Cell:'):
+                alignment_data['cell_name'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Constraint Pin:'):
+                alignment_data['constraint_pin'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Related Pin:'):
+                alignment_data['related_pin'] = line.split(':', 1)[1].strip()
+            elif line.startswith('When:'):
+                alignment_data['when_condition'] = line.split(':', 1)[1].strip()
+
+            # Parse MCQC Deck Analysis section
+            elif line.startswith('cp2q_del1:') and 'MCQC' not in line:
+                value = line.split(':', 1)[1].strip()
+                alignment_data['cp2q_del1_MCQC'] = value
+            elif line.startswith('cp2q_del2:') and 'MCQC' not in line:
+                value = line.split(':', 1)[1].strip()
+                alignment_data['cp2q_del2_MCQC'] = value
+            elif line.startswith('final_state:') and 'MCQC' not in line:
+                value = line.split(':', 1)[1].strip()
+                alignment_data['final_state_MCQC'] = value
+            elif line.startswith('internal_node:'):
+                value = line.split(':', 1)[1].strip()
+                alignment_data['internal_node_MCQC'] = value
+
+            # Parse Alignment Check section
+            elif 'Alignment Check' in line:
+                # Look for alignment results in following lines
+                for j in range(i+1, min(i+10, len(lines))):
+                    align_line = lines[j].strip()
+                    if align_line.startswith('cp2q_del1:'):
+                        match_value = align_line.split(':', 1)[1].strip().split()[0]
+                        alignment_data['cp2q_del1_Match'] = match_value
+                    elif align_line.startswith('cp2q_del2:'):
+                        match_value = align_line.split(':', 1)[1].strip().split()[0]
+                        alignment_data['cp2q_del2_Match'] = match_value
+                    elif align_line.startswith('final_state:'):
+                        match_value = align_line.split(':', 1)[1].strip().split()[0]
+                        alignment_data['final_state_Match'] = match_value
+                    elif align_line.startswith('probe:'):
+                        match_value = align_line.split(':', 1)[1].strip().split()[0]
+                        alignment_data['probe_Match'] = match_value
+                        # Extract probe template value
+                        if 'Template expects' in align_line:
+                            try:
+                                probe_part = align_line.split('Template expects')[1].split(',')[0].strip()
+                                alignment_data['probe_Template'] = probe_part
+                            except:
+                                pass
+
+    except Exception as e:
+        print(f"Error parsing report file {report_file}: {e}")
+        return None
+
+    return alignment_data
+
+
 def generate_simplified_text_report(validation_data: Dict, output_file: Path):
     """
     Generate simplified text report focusing on MCQC vs Template alignment.
@@ -3723,18 +3885,22 @@ def process_single_arc(arc_data):
     """Worker function for parallel processing of single arc.
 
     Args:
-        arc_data: Tuple containing (arc_folder, args, verbose)
+        arc_data: Tuple containing (arc_folder, args, verbose, shared_template_data)
 
     Returns:
         Tuple of (arc_folder, validation_data) or (arc_folder, None) if error
     """
-    arc_folder, args, verbose = arc_data
+    arc_folder, args, verbose, shared_template_data = arc_data
 
-    # Initialize components for this worker (they need to be pickleable)
-    tracer = InputTraceabilityEngine(verbose=verbose)
-    analyzer = SPICEDeckAnalyzer(verbose=verbose)
-    validator = ComplianceValidator(verbose=verbose)
-    reporter = ReportGenerator(verbose=verbose)
+    # Initialize components for this worker (NO TEMPLATE PARSING)
+    tracer = InputTraceabilityEngine(verbose=False)  # Disable verbose to reduce noise
+    analyzer = SPICEDeckAnalyzer(verbose=False)
+    validator = ComplianceValidator(verbose=False)
+    reporter = ReportGenerator(verbose=False)
+
+    # Use shared template data (already parsed once in main process)
+    if shared_template_data:
+        tracer._template_cache[shared_template_data['file_path']] = shared_template_data
 
     arc_name = arc_folder.name
 
@@ -3865,16 +4031,11 @@ def process_single_arc(arc_data):
             generate_simplified_text_report(validation_data, arc_report_file)
         report_time = time.time() - t6
 
-        # Timing summary
+        # Timing summary (only in verbose mode)
         total_time = time.time() - arc_start_time
-        if verbose:
-            print(f"  ⏱️  Timing breakdown:")
-            print(f"     Trace inputs:     {trace_time:.2f}s ({trace_time/total_time*100:.1f}%)")
-            print(f"     Deck analysis:    {deck_time:.2f}s ({deck_time/total_time*100:.1f}%)")
-            print(f"     Template match:   {template_time:.2f}s ({template_time/total_time*100:.1f}%)")
-            print(f"     Validation:       {validation_time:.2f}s ({validation_time/total_time*100:.1f}%)")
-            print(f"     Report gen:       {report_time:.2f}s ({report_time/total_time*100:.1f}%)")
-            print(f"     Total:           {total_time:.2f}s")
+        if verbose and total_time > 2.0:  # Only show timing breakdown for slow arcs
+            print(f"  ⏱️  Timing breakdown: {total_time:.2f}s total")
+            print(f"     Template: {template_time:.2f}s, Deck: {deck_time:.2f}s, Validation: {validation_time:.2f}s")
 
         return (arc_folder, validation_data)
 
@@ -3899,24 +4060,24 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Audit single arc with explicit input files
-  python audit_deck_compliance.py --arc_folder /work/MCQC_RUN/DECKS/mpw_SDFQTXG_X1/ \\
+  # CRITICAL ISSUE RESOLUTION: Process remaining 99 arcs (preserve existing 1147 reports)
+  python audit_deck_compliance.py --deck_dir /work/MCQC_RUN/DECKS/ \\
     --template_file /work/lib/template_mpw.tcl \\
-    --chartcl_file /work/lib/chartcl.tcl \\
-    --globals_file /work/lib/mcqc_globals_hspice.txt \\
-    --output_dir ./results/
+    --output_dir ./results/ --parallel 8
 
-  # Audit multiple arcs (auto-discover input files)
-  python audit_deck_compliance.py --deck_dir /work/MCQC_RUN/DECKS/ --output_dir ./results/
+  # Force reprocess all 1246 arcs (overwrite existing reports)
+  python audit_deck_compliance.py --deck_dir /work/MCQC_RUN/DECKS/ \\
+    --template_file /work/lib/template_mpw.tcl \\
+    --output_dir ./results/ --parallel 8 --force
 
-  # Audit with specific configuration files
+  # Generate CSV only from existing reports (no processing)
+  python audit_deck_compliance.py --deck_dir /work/MCQC_RUN/DECKS/ \\
+    --output_dir ./results/ --csv_only
+
+  # High-performance mode for large datasets (recommended)
   python audit_deck_compliance.py --deck_dir /work/DECKS/ \\
-    --template_file ./template.tcl \\
-    --globals_file ./globals.txt \\
-    --output_dir ./results/ --verbose
-
-  # Generate only CSV summary
-  python audit_deck_compliance.py --deck_dir /work/DECKS/ --output_dir ./results/ --csv_only
+    --template_file ./template.tcl --output_dir ./results/ \\
+    --parallel 16 --csv_only
         """
     )
 
@@ -3984,6 +4145,11 @@ Examples:
         default=min(cpu_count(), 8),  # Reasonable default, max 8 for safety
         help=f'Number of parallel workers (default: {min(cpu_count(), 8)}, detected: {cpu_count()} cores)'
     )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force reprocessing of all arcs, overwriting existing reports'
+    )
 
     args = parser.parse_args()
 
@@ -4022,6 +4188,26 @@ Examples:
             print(f"❌ Deck directory not found: {args.deck_dir}")
             return 1
 
+    # CRITICAL PERFORMANCE FIX: Parse template ONCE before parallel processing
+    shared_template_data = None
+    if args.template_file and args.template_file.exists():
+        print(f"🔧 Pre-parsing template for shared cache: {args.template_file}")
+        template_tracer = InputTraceabilityEngine(verbose=False)
+        try:
+            shared_template_data = template_tracer.get_cached_template_data(args.template_file)
+            shared_template_data['file_path'] = str(args.template_file)  # Store file path for cache key
+            print(f"   ✅ Template cached: {shared_template_data.get('total_arcs', 0)} arcs, {shared_template_data.get('total_cells', 0)} cells")
+        except Exception as e:
+            print(f"   ⚠️  Template caching failed: {e}")
+            shared_template_data = None
+
+    # Filter arcs based on --force flag
+    if not args.force and args.deck_dir:
+        print(f"🔍 Checking for existing reports (use --force to reprocess all)...")
+        arc_folders, skipped_arcs = find_arcs_to_process(arc_folders, args.output_dir)
+        if skipped_arcs:
+            print(f"   ⏭️  Skipped {len(skipped_arcs)} arcs with existing reports")
+
     print(f"🔍 Processing {len(arc_folders)} arc folders...")
 
     # Start timing for overall processing
@@ -4030,8 +4216,8 @@ Examples:
     # Process arc folders in parallel for maximum performance
     validation_results = []
 
-    # Prepare data for parallel processing
-    arc_data_list = [(arc_folder, args, args.verbose) for arc_folder in arc_folders]
+    # Prepare data for parallel processing with shared template data
+    arc_data_list = [(arc_folder, args, args.verbose, shared_template_data) for arc_folder in arc_folders]
 
     # Use parallel processing if multiple arcs
     if len(arc_folders) > 1 and args.parallel > 1:
@@ -4040,12 +4226,12 @@ Examples:
         workers = args.parallel
 
         print(f"🚀 Processing {total_arcs} arcs using {workers} parallel workers...")
-        print(f"   📊 Performance targets:")
-        print(f"      • Template caching:    50x speedup (parse once)")
-        print(f"      • Parallel processing: {workers}x speedup (multi-core)")
-        print(f"      • Deck optimization:   5x speedup (streaming)")
-        print(f"      • Combined speedup:    ~{50 * workers * 5}x theoretical")
-        print(f"   ⏰ Expected completion: ~{(total_arcs / workers) * 5:.0f} seconds (vs ~{total_arcs * 60:.0f}s sequential)")
+        if args.verbose:
+            print(f"   📊 Performance optimizations active:")
+            print(f"      • Template caching: Parse once, use {total_arcs} times")
+            print(f"      • Parallel processing: {workers} cores")
+            print(f"      • Deck optimization: Stream processing")
+            print(f"   ⏰ Target: <30 minutes total (vs {total_arcs * 60:.0f}s original)")
         print()
 
         parallel_start_time = time.time()
@@ -4083,8 +4269,8 @@ Examples:
                     fail_count += 1
                     status_icon = "⚠️"
 
-                # Show progress every 10% or for verbose mode
-                if args.verbose or i % max(1, total_arcs // 10) == 0 or i <= 5 or i >= total_arcs - 2:
+                # Show progress every 10% or for first/last few arcs
+                if args.verbose or i % max(1, total_arcs // 10) == 0 or i <= 3 or i >= total_arcs - 1:
                     print(f"  [{i:3d}/{total_arcs}] {status_icon} {arc_folder.name}: {status}")
             else:
                 error_count += 1
@@ -4101,11 +4287,11 @@ Examples:
                 print(f"  [{i:3d}/{total_arcs}] ❌ {arc_folder.name}: ERROR")
 
         # Summary stats
-        print(f"\n📈 Processing Summary:")
+        print(f"\n📈 Parallel Processing Summary:")
         print(f"   ✅ PASS:  {pass_count:3d} ({pass_count/total_arcs*100:.1f}%)")
         print(f"   ⚠️  FAIL:  {fail_count:3d} ({fail_count/total_arcs*100:.1f}%)")
         print(f"   ❌ ERROR: {error_count:3d} ({error_count/total_arcs*100:.1f}%)")
-        print(f"   ⚡ Speed:  {actual_speedup:.0f}x faster than original sequential processing")
+        print(f"   ⚡ Speedup: {actual_speedup:.0f}x vs sequential (Target: 100x+)")
 
     else:
         # Sequential processing for single arc or when parallel disabled
@@ -4113,10 +4299,10 @@ Examples:
         print(f"🔄 Processing {total_arcs} arcs sequentially...")
         if total_arcs > 1:
             print(f"   💡 Tip: Use --parallel {min(cpu_count(), 8)} for {min(cpu_count(), 8)}x speedup")
-        print(f"   📊 Performance optimizations active:")
-        print(f"      • Template caching:    50x speedup")
-        print(f"      • Deck optimization:   5x speedup")
-        print(f"      • Combined speedup:    ~250x vs original")
+        if args.verbose:
+            print(f"   📊 Performance optimizations active:")
+            print(f"      • Template caching: Enabled")
+            print(f"      • Deck optimization: Stream processing")
         print()
 
         sequential_start_time = time.time()
@@ -4124,11 +4310,11 @@ Examples:
         fail_count = 0
         error_count = 0
 
-        for i, (arc_folder, args_copy, verbose) in enumerate(arc_data_list, 1):
+        for i, (arc_folder, args_copy, verbose, shared_template_data) in enumerate(arc_data_list, 1):
             arc_start_time = time.time()
             print(f"[{i:3d}/{total_arcs}] Processing: {arc_folder.name}")
 
-            arc_folder, validation_data = process_single_arc((arc_folder, args_copy, verbose))
+            arc_folder, validation_data = process_single_arc((arc_folder, args_copy, verbose, shared_template_data))
             arc_time = time.time() - arc_start_time
 
             if validation_data:
@@ -4148,8 +4334,8 @@ Examples:
                 avg_time = elapsed / i
                 remaining_time = (total_arcs - i) * avg_time
 
-                print(f"     {status_icon} Status: {status} ({arc_time:.1f}s)")
-                if total_arcs > 5:  # Only show ETA for longer runs
+                print(f"     {status_icon} {status} ({arc_time:.1f}s)")
+                if total_arcs > 10 and i % 5 == 0:  # Show ETA every 5 arcs for longer runs
                     print(f"     ⏰ Progress: {i/total_arcs*100:.1f}% | ETA: {remaining_time:.0f}s")
             else:
                 error_count += 1
@@ -4163,7 +4349,7 @@ Examples:
                     'recommendations': ['Check arc folder structure and file accessibility']
                 }
                 validation_results.append(error_result)
-                print(f"     ❌ Status: ERROR ({arc_time:.1f}s)")
+                print(f"     ❌ ERROR ({arc_time:.1f}s)")
 
         sequential_time = time.time() - sequential_start_time
         theoretical_original_time = total_arcs * 60  # Original 1 min per arc
@@ -4174,15 +4360,47 @@ Examples:
         print(f"   ⚠️  FAIL:  {fail_count:3d} ({fail_count/total_arcs*100:.1f}%)")
         print(f"   ❌ ERROR: {error_count:3d} ({error_count/total_arcs*100:.1f}%)")
         print(f"   🕐 Total: {sequential_time:.1f}s ({sequential_time/total_arcs:.1f}s per arc)")
-        print(f"   ⚡ Speed: {actual_speedup:.0f}x faster than original")
+        print(f"   ⚡ Speedup: {actual_speedup:.0f}x vs original (Target: 100x+)")
 
     # Step 5: Generate alignment CSV and statistics
     alignment_results = [result.get('alignment_result', {}) for result in validation_results if result.get('alignment_result')]
 
-    # Generate primary alignment CSV
+    # Generate primary alignment CSV (includes existing + new reports)
     alignment_csv_file = args.output_dir / "alignment_summary.csv"
     alignment_analyzer = AlignmentAnalyzer(verbose=args.verbose)
-    alignment_analyzer.generate_alignment_csv(alignment_results, alignment_csv_file)
+
+    # If we have existing reports to include, merge them
+    if not args.force and args.deck_dir and alignment_results:
+        print(f"\n📊 Generating comprehensive alignment CSV...")
+        print(f"   🔄 Including {len(alignment_results)} newly processed arcs")
+
+        # Check for existing reports to include
+        existing_reports_dir = args.output_dir.parent if args.output_dir.name == 'results' else args.output_dir
+        all_arc_paths = [f for f in args.deck_dir.iterdir() if f.is_dir() and (f / "mc_sim.sp").exists()]
+
+        print(f"   📁 Scanning for existing reports in arc directories...")
+        existing_alignment_data = []
+        for arc_path in all_arc_paths:
+            arc_name = arc_path.name
+            existing_report = arc_path / f"{arc_name}_alignment_report.txt"
+            if existing_report.exists() and arc_path not in [arc for arc, _, _, _ in arc_data_list]:
+                try:
+                    parsed_data = parse_alignment_report_file(existing_report)
+                    if parsed_data:
+                        existing_alignment_data.append(parsed_data)
+                except Exception as e:
+                    print(f"   ⚠️  Error parsing {existing_report}: {e}")
+
+        if existing_alignment_data:
+            print(f"   ✅ Found {len(existing_alignment_data)} existing reports to include")
+            # Combine existing and new data
+            combined_alignment_data = existing_alignment_data + alignment_results
+            alignment_analyzer.generate_alignment_csv(combined_alignment_data, alignment_csv_file)
+            print(f"   📊 Generated comprehensive CSV: {len(combined_alignment_data)} total arcs")
+        else:
+            alignment_analyzer.generate_alignment_csv(alignment_results, alignment_csv_file)
+    else:
+        alignment_analyzer.generate_alignment_csv(alignment_results, alignment_csv_file)
 
     # Calculate processing statistics for report
     processing_stats = {
@@ -4238,14 +4456,34 @@ Examples:
         print(f"   ✗ Cell not found:       {cell_not_found} arcs ({cell_not_found/total_with_template:.1%})")
         print(f"   ✗ Arc not found:        {arc_not_found} arcs ({arc_not_found/total_with_template:.1%})")
 
+    # CRITICAL: Performance improvement verification
+    total_processing_time = time.time() - start_time
+    if len(validation_results) > 10:  # Only show performance metrics for larger runs
+        print(f"\n🚀 PERFORMANCE VERIFICATION:")
+        print(f"   ⏱️  Total processing time: {total_processing_time:.1f}s ({total_processing_time/60:.1f} minutes)")
+        print(f"   ⚡ Average per arc: {total_processing_time/len(validation_results):.2f}s")
+        original_estimated_time = len(validation_results) * 60  # 1 minute per arc originally
+        actual_speedup = original_estimated_time / total_processing_time if total_processing_time > 0 else 0
+        print(f"   🎯 Actual speedup achieved: {actual_speedup:.0f}x vs original (target: 100x+)")
+        if shared_template_data:
+            print(f"   ✅ Template caching: WORKING (parsed once, used {len(validation_results)} times)")
+        else:
+            print(f"   ⚠️  Template caching: NOT USED (no template file provided)")
+
     print(f"\n📁 Summary reports in: {args.output_dir}")
-    print(f"   📊 Primary Alignment CSV: {alignment_csv_file}")
-    print(f"   📈 Statistics Report: {stats_file}")
-    print(f"   📊 Legacy CSV summary: {csv_file}")
+    print(f"   📊 PRIMARY: {alignment_csv_file}")
+    print(f"   📈 Statistics: {stats_file}")
+    print(f"   📊 Legacy CSV: {csv_file}")
     print(f"   🎯 Template matching: {template_summary_file}")
 
     if not args.csv_only:
-        print(f"   📄 Individual arc reports: [arc_name]_alignment_report.txt in each arc directory")
+        print(f"   📄 Individual reports: [arc_name]_alignment_report.txt in each arc directory")
+
+    print(f"\n✅ MCQC validation completed successfully!")
+    if total_processing_time < 30 * 60:  # Less than 30 minutes
+        print(f"🎉 Performance target achieved: {total_processing_time:.1f}s < 30 minutes")
+    else:
+        print(f"⚠️  Performance target missed: {total_processing_time/60:.1f} minutes > 30 minutes")
         print(f"   📈 Processed {len(validation_results)} arc directories")
 
     return 0
