@@ -77,7 +77,7 @@ class TemplateMatchResult:
         self.arc_found = False
         self.cell_name = cell_name
         self.total_cells_searched = total_searched
-        self.error_message = f"Cell '{cell_name}' not found in template.tcl"
+        self.error_message = "Cell '{}' not found in template.tcl".format(cell_name)
 
     def mark_arc_not_found(self, cell_name, match_details):
         """Mark as arc not found in cell"""
@@ -86,7 +86,7 @@ class TemplateMatchResult:
         self.arc_found = False
         self.cell_name = cell_name
         self.match_details = match_details
-        self.error_message = f"Arc not found in cell '{cell_name}'"
+        self.error_message = "Arc not found in cell '{}'".format(cell_name)
 
 
 class InputTraceabilityEngine:
@@ -577,7 +577,7 @@ class InputTraceabilityEngine:
             })
 
         except Exception as e:
-            result.error_message = f"Error using cached template data: {e}"
+            result.error_message = "Error using cached template data: {}".format(e)
 
         return result
 
@@ -3251,7 +3251,7 @@ class ReportGenerator:
                 success = 'SUCCESS' if template_result.success else 'FAILED'
                 cell_found = 'YES' if template_result.cell_found else 'NO'
                 arc_found = 'YES' if template_result.arc_found else 'N/A' if not template_result.cell_found else 'NO'
-                lines = f'"{template_result.line_start}-{template_result.line_end}"' if template_result.success else '""'
+                lines = '"{}-{}"'.format(template_result.line_start, template_result.line_end) if template_result.success else '""'
                 error = template_result.error_message or ''
                 error = error.replace('"', '""')  # Escape quotes for CSV
             else:
@@ -3267,7 +3267,7 @@ class ReportGenerator:
                 lines = '""'
                 error = 'No template matching data available'
 
-            csv_row = f'{deck_name},{cell_name},{success},{cell_found},{arc_found},{lines},"{error}"'
+            csv_row = '{},{},{},{},{},{},"{}"'.format(deck_name, cell_name, success, cell_found, arc_found, lines, error)
             csv_content.append(csv_row)
 
         # Write CSV file
@@ -3406,7 +3406,7 @@ class ReportGenerator:
         self.logger.debug(f"Searching for cp2q_del1 in {len(measurements)} measurements")
         for i, meas in enumerate(measurements):
             meas_name = meas.get('measurement_name', 'unknown')
-            self.logger.debug(f"  Measurement {i+1}: '{meas_name}'")
+            self.logger.debug("  Measurement {}: '{}'".format(i+1, meas_name))
             if 'cp2q_del1' in meas_name:
                 cp2q_del1_found = True
                 line_num = meas.get('line_number', 'unknown')
