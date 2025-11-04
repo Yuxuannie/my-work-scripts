@@ -1746,9 +1746,14 @@ class ComplianceValidator:
 
         return logger
 
-    def validate_compliance(self, traceability_data: Dict[str, Any], deck_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_compliance(self, traceability_data: Dict[str, Any], deck_analysis: Dict[str, Any], template_match_result=None) -> Dict[str, Any]:
         """
         Comprehensive compliance validation.
+
+        Args:
+            traceability_data: Input traceability data
+            deck_analysis: SPICE deck analysis results
+            template_match_result: Optional template matching results
 
         Returns detailed validation results with PASS/FAIL status and reasons.
         """
