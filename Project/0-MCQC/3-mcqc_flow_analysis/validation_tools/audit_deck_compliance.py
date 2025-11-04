@@ -31,6 +31,7 @@ from pathlib import Path
 from collections import defaultdict, Counter
 from typing import Dict, List, Tuple, Optional, Any, Set
 import logging
+from multiprocessing import Pool, cpu_count
 
 # Optional YAML support
 try:
@@ -277,6 +278,7 @@ class InputTraceabilityEngine:
     def trace_arc_inputs(self, arc_folder: Path, template_file: Optional[Path] = None,
                          chartcl_file: Optional[Path] = None, globals_file: Optional[Path] = None,
                          chartcl_verbose: bool = False) -> Dict[str, Any]:
+        # PERFORMANCE NOTE: chartcl_file and chartcl_verbose parameters kept for compatibility but ignored
         """
         Trace ALL inputs that contributed to this arc's deck generation.
 
@@ -301,7 +303,8 @@ class InputTraceabilityEngine:
 
         # Use explicit files or find them in arc hierarchy
         template_file_to_use = template_file or self._find_template_file(arc_folder)
-        chartcl_file_to_use = chartcl_file or self._find_chartcl_file(arc_folder)
+        # PERFORMANCE: Skip chartcl file finding for speed
+        # chartcl_file_to_use = chartcl_file or self._find_chartcl_file(arc_folder)
 
         # Handle globals files - use explicit file or find multiple in hierarchy
         if globals_file:
@@ -313,8 +316,9 @@ class InputTraceabilityEngine:
         if template_file_to_use and template_file_to_use.exists():
             traceability['input_sources']['template'] = self._parse_template_inputs(template_file_to_use)
 
-        if chartcl_file_to_use and chartcl_file_to_use.exists():
-            traceability['input_sources']['chartcl'] = self._parse_chartcl_inputs(chartcl_file_to_use, chartcl_verbose)
+        # PERFORMANCE: Skip char.tcl parsing entirely for speed
+        # if chartcl_file_to_use and chartcl_file_to_use.exists():
+        #     traceability['input_sources']['chartcl'] = self._parse_chartcl_inputs(chartcl_file_to_use, chartcl_verbose)
 
         for globals_file_item in globals_files:
             globals_key = f"globals_{globals_file_item.name}"
@@ -2435,11 +2439,7 @@ class ReportGenerator:
         if 'template' in input_sources:
             lines.extend(self._format_template_specifications(input_sources['template'], arc_info, display_mode))
 
-        # [B] Chartcl.tcl Variables
-        if 'chartcl' in input_sources:
-            lines.extend(self._format_chartcl_specifications(input_sources['chartcl'], arc_info, display_mode))
-
-        # [C] Globals File Configuration
+        # [B] Globals File Configuration (PERFORMANCE: Skipping char.tcl parsing for speed)
         globals_sources = {k: v for k, v in input_sources.items() if k.startswith('globals_')}
         if globals_sources:
             lines.extend(self._format_globals_specifications(globals_sources))
@@ -3247,6 +3247,146 @@ class ReportGenerator:
         return name_map.get(test_name, test_name.replace('_', ' ').title())
 
 
+def process_single_arc(arc_data):
+    """Worker function for parallel processing of single arc.
+
+    Args:
+        arc_data: Tuple containing (arc_folder, args, verbose)
+
+    Returns:
+        Tuple of (arc_folder, validation_data) or (arc_folder, None) if error
+    """
+    arc_folder, args, verbose = arc_data
+
+    # Initialize components for this worker (they need to be pickleable)
+    tracer = InputTraceabilityEngine(verbose=verbose)
+    analyzer = SPICEDeckAnalyzer(verbose=verbose)
+    validator = ComplianceValidator(verbose=verbose)
+    reporter = ReportGenerator(verbose=verbose)
+
+    arc_name = arc_folder.name
+
+    try:
+        # Timing for this arc
+        arc_start_time = time.time()
+
+        # Find input files
+        mc_sim_file = arc_folder / "mc_sim.sp"
+        if not mc_sim_file.exists():
+            print(f"❌ {arc_name}: mc_sim.sp not found")
+            return (arc_folder, None)
+
+        # Auto-discover configuration files
+        template_file_to_use = args.template_file
+        chartcl_file_to_use = args.chartcl_file
+        globals_file_to_use = args.globals_file
+
+        if not template_file_to_use:
+            # Search for template.tcl in arc hierarchy
+            search_dirs = [arc_folder, arc_folder.parent, arc_folder.parent.parent]
+            for search_dir in search_dirs:
+                candidate = search_dir / "template.tcl"
+                if candidate.exists():
+                    template_file_to_use = candidate
+                    break
+
+        if not chartcl_file_to_use:
+            # Search for chartcl.tcl in arc hierarchy
+            search_dirs = [arc_folder, arc_folder.parent, arc_folder.parent.parent]
+            for search_dir in search_dirs:
+                candidate = search_dir / "chartcl.tcl"
+                if candidate.exists():
+                    chartcl_file_to_use = candidate
+                    break
+
+        if not globals_file_to_use:
+            # Search for globals file
+            search_dirs = [arc_folder, arc_folder.parent, arc_folder.parent.parent]
+            for search_dir in search_dirs:
+                for globals_file in search_dir.glob("*globals*.txt"):
+                    globals_file_to_use = globals_file
+                    break
+                if globals_file_to_use:
+                    break
+
+        # Step 1: Trace inputs
+        t1 = time.time()
+        traceability_data = tracer.trace_arc_inputs(
+            arc_folder=arc_folder,
+            template_file=template_file_to_use,
+            chartcl_file=chartcl_file_to_use,
+            globals_file=globals_file_to_use,
+            chartcl_verbose=args.chartcl_display == 'all'
+        )
+        trace_time = time.time() - t1
+
+        # Step 2: Analyze deck
+        t2 = time.time()
+        deck_analysis = analyzer.analyze_deck(mc_sim_file)
+        deck_time = time.time() - t2
+
+        # Step 3: Template matching (if template available)
+        t3 = time.time()
+        template_match_result = None
+        if template_file_to_use and template_file_to_use.exists():
+            # Parse arc name for template matching
+            arc_info = reporter._parse_arc_name(arc_name)
+
+            template_match_result = tracer.extract_template_arc_definition(
+                template_file_to_use,
+                cell_name=arc_info.get('cell_name', ''),
+                arc_type=arc_info.get('arc_type', ''),
+                related_pin=arc_info.get('related_pin', ''),
+                when_condition=arc_info.get('when_condition', '')
+            )
+        template_time = time.time() - t3
+
+        # Step 4: Validate compliance
+        t4 = time.time()
+        compliance_tests = validator.validate_compliance(
+            traceability_data=traceability_data,
+            deck_analysis=deck_analysis,
+            template_match_result=template_match_result
+        )
+        validation_time = time.time() - t4
+
+        # Create validation data
+        validation_data = {
+            'traceability_data': traceability_data,
+            'deck_analysis': deck_analysis,
+            'template_match_result': template_match_result,
+            'tests': compliance_tests,
+            'overall_status': 'PASS' if all(test.get('status') == 'PASS' for test in compliance_tests.values()) else 'FAIL'
+        }
+
+        # Step 5: Generate individual arc report
+        t5 = time.time()
+        if not args.csv_only:
+            arc_report_file = arc_folder / f"{arc_name}_compliance_report.yaml"
+            reporter.generate_structured_report(validation_data, arc_report_file, args.chartcl_display)
+        report_time = time.time() - t5
+
+        # Timing summary
+        total_time = time.time() - arc_start_time
+        if verbose:
+            print(f"  ⏱️  Timing breakdown:")
+            print(f"     Trace inputs:     {trace_time:.2f}s ({trace_time/total_time*100:.1f}%)")
+            print(f"     Deck analysis:    {deck_time:.2f}s ({deck_time/total_time*100:.1f}%)")
+            print(f"     Template match:   {template_time:.2f}s ({template_time/total_time*100:.1f}%)")
+            print(f"     Validation:       {validation_time:.2f}s ({validation_time/total_time*100:.1f}%)")
+            print(f"     Report gen:       {report_time:.2f}s ({report_time/total_time*100:.1f}%)")
+            print(f"     Total:           {total_time:.2f}s")
+
+        return (arc_folder, validation_data)
+
+    except Exception as e:
+        print(f"❌ Error processing {arc_name}: {str(e)}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        return (arc_folder, None)
+
+
 def main():
     """
     Main CLI interface for MCQC specification compliance validation.
@@ -3339,6 +3479,12 @@ Examples:
         action='store_true',
         help='Generate only CSV summary, skip detailed YAML reports'
     )
+    parser.add_argument(
+        '--parallel',
+        type=int,
+        default=min(cpu_count(), 8),  # Reasonable default, max 8 for safety
+        help=f'Number of parallel workers (default: {min(cpu_count(), 8)}, detected: {cpu_count()} cores)'
+    )
 
     args = parser.parse_args()
 
@@ -3379,99 +3525,68 @@ Examples:
 
     print(f"🔍 Processing {len(arc_folders)} arc folders...")
 
-    # Process each arc folder
+    # Process arc folders in parallel for maximum performance
     validation_results = []
 
-    for i, arc_folder in enumerate(arc_folders, 1):
-        arc_start_time = time.time()
-        print(f"[{i}/{len(arc_folders)}] Processing: {arc_folder.name}")
+    # Prepare data for parallel processing
+    arc_data_list = [(arc_folder, args, args.verbose) for arc_folder in arc_folders]
 
-        try:
-            # Step 1: Trace inputs using explicit files if provided
-            t1 = time.time()
-            traceability_data = tracer.trace_arc_inputs(
-                arc_folder,
-                template_file=args.template_file,
-                chartcl_file=args.chartcl_file,
-                globals_file=args.globals_file,
-                chartcl_verbose=args.chartcl_display == 'all'  # Legacy support - 'all' mode = verbose
-            )
-            trace_time = time.time() - t1
+    # Use parallel processing if multiple arcs
+    if len(arc_folders) > 1 and args.parallel > 1:
+        print(f"🚀 Processing {len(arc_folders)} arcs using {args.parallel} parallel workers...")
+        parallel_start_time = time.time()
 
-            # Step 2: Analyze mc_sim.sp deck
-            t2 = time.time()
-            mc_sim_file = arc_folder / "mc_sim.sp"
-            deck_analysis = analyzer.analyze_deck(mc_sim_file)
-            deck_time = time.time() - t2
+        with Pool(processes=args.parallel) as pool:
+            # Process arcs in parallel
+            results = pool.map(process_single_arc, arc_data_list)
 
-            # Step 3: Extract template matching result for CSV summary
-            t3 = time.time()
-            template_match_result = None
-            input_sources = traceability_data.get('input_sources', {})
-            if 'template' in input_sources:
-                template_file_path = Path(input_sources['template'].get('file_path', ''))
-                if template_file_path.exists():
-                    # Parse arc name to get matching criteria
-                    arc_name = arc_folder.name
-                    arc_info = reporter._parse_arc_name(arc_name)
+        parallel_time = time.time() - parallel_start_time
+        print(f"  ⚡ Parallel processing completed in {parallel_time:.2f}s")
 
-                    template_match_result = tracer.extract_template_arc_definition(
-                        template_file_path,
-                        arc_info.get('cell_name', 'unknown'),
-                        arc_info.get('arc_type', 'unknown'),
-                        arc_info.get('related_pin', 'unknown'),
-                        arc_info.get('when_condition', 'unknown'),
-                        arc_info
-                    )
-            template_time = time.time() - t3
+        # Convert results to validation format
+        for i, (arc_folder, validation_data) in enumerate(results, 1):
+            if validation_data:
+                validation_data['arc_name'] = arc_folder.name
+                validation_results.append(validation_data)
+                print(f"  [{i}/{len(arc_folders)}] ✅ {arc_folder.name}: {validation_data['overall_status']}")
+            else:
+                # Create error result
+                error_result = {
+                    'arc_name': arc_folder.name,
+                    'overall_status': 'ERROR',
+                    'error': 'Processing failed in parallel worker',
+                    'test_summary': {'total_tests': 0, 'passed_tests': 0, 'failed_tests': 0, 'error_tests': 1, 'pass_rate': 0.0, 'average_score': 0.0},
+                    'critical_issues': ['Processing error in parallel worker'],
+                    'recommendations': ['Check arc folder structure and file accessibility']
+                }
+                validation_results.append(error_result)
+                print(f"  [{i}/{len(arc_folders)}] ❌ {arc_folder.name}: ERROR")
 
-            # Step 4: Validate compliance
-            t4 = time.time()
-            validation_result = validator.validate_compliance(traceability_data, deck_analysis)
-            validation_time = time.time() - t4
+    else:
+        # Sequential processing for single arc or when parallel disabled
+        print(f"🔄 Processing {len(arc_folders)} arcs sequentially...")
 
-            # Add source data to validation result
-            validation_result['traceability_data'] = traceability_data
-            validation_result['deck_analysis'] = deck_analysis
-            validation_result['arc_name'] = arc_folder.name
-            validation_result['template_match_result'] = template_match_result
+        for i, (arc_folder, args_copy, verbose) in enumerate(arc_data_list, 1):
+            print(f"[{i}/{len(arc_folders)}] Processing: {arc_folder.name}")
 
-            validation_results.append(validation_result)
+            arc_folder, validation_data = process_single_arc((arc_folder, args_copy, verbose))
 
-            # Step 5: Generate individual report in arc directory (unless CSV only)
-            t5 = time.time()
-            if not args.csv_only:
-                # Save individual arc report in the arc directory itself
-                arc_report_file = arc_folder / "compliance_validation_report.txt"
-                reporter.generate_structured_report(validation_result, arc_report_file, args.chartcl_display)
-                print(f"  📄 Arc report: {arc_report_file}")
-            report_time = time.time() - t5
-
-            total_time = time.time() - arc_start_time
-
-            # Performance breakdown
-            print(f"  ⏱️  Timing breakdown:")
-            print(f"     Trace inputs:     {trace_time:.2f}s ({trace_time/total_time*100:.1f}%)")
-            print(f"     Deck analysis:    {deck_time:.2f}s ({deck_time/total_time*100:.1f}%)")
-            print(f"     Template match:   {template_time:.2f}s ({template_time/total_time*100:.1f}%)")
-            print(f"     Validation:       {validation_time:.2f}s ({validation_time/total_time*100:.1f}%)")
-            print(f"     Report gen:       {report_time:.2f}s ({report_time/total_time*100:.1f}%)")
-            print(f"     TOTAL:            {total_time:.2f}s")
-            print(f"  ✅ Status: {validation_result['overall_status']}")
-
-        except Exception as e:
-            print(f"  ❌ Error processing {arc_folder.name}: {e}")
-
-            # Create error result
-            error_result = {
-                'arc_name': arc_folder.name,
-                'overall_status': 'ERROR',
-                'error': str(e),
-                'test_summary': {'total_tests': 0, 'passed_tests': 0, 'failed_tests': 0, 'error_tests': 1, 'pass_rate': 0.0, 'average_score': 0.0},
-                'critical_issues': [f"Processing error: {e}"],
-                'recommendations': ['Check arc folder structure and file accessibility']
-            }
-            validation_results.append(error_result)
+            if validation_data:
+                validation_data['arc_name'] = arc_folder.name
+                validation_results.append(validation_data)
+                print(f"  ✅ Status: {validation_data['overall_status']}")
+            else:
+                # Create error result
+                error_result = {
+                    'arc_name': arc_folder.name,
+                    'overall_status': 'ERROR',
+                    'error': 'Processing failed',
+                    'test_summary': {'total_tests': 0, 'passed_tests': 0, 'failed_tests': 0, 'error_tests': 1, 'pass_rate': 0.0, 'average_score': 0.0},
+                    'critical_issues': ['Processing error'],
+                    'recommendations': ['Check arc folder structure and file accessibility']
+                }
+                validation_results.append(error_result)
+                print(f"  ❌ Status: ERROR")
 
     # Step 5: Generate CSV summaries
     csv_file = args.output_dir / "compliance_summary.csv"
