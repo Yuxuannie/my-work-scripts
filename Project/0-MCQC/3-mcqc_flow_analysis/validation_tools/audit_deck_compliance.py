@@ -1666,6 +1666,106 @@ class SPICEDeckAnalyzer:
                         })
                         break  # Only record first one per line for performance
 
+    def detect_internal_node_measurement(self, deck_path: Path) -> Dict[str, Any]:
+        """
+        Detect if cp2q_del1 and cp2q_del2 measurements use internal nodes.
+
+        Looks for patterns like:
+        .meas cp2q_del1 TRIG v(X1.Q1) ... (internal node)
+        vs
+        .meas cp2q_del1 TRIG v(Q) ...     (output pin)
+
+        Returns dict with measurement analysis.
+        """
+        internal_node_analysis = {
+            'cp2q_del1_internal': None,
+            'cp2q_del2_internal': None,
+            'final_state_internal': None,
+            'internal_node_patterns': [],
+            'measurement_details': []
+        }
+
+        if not deck_path.exists():
+            return internal_node_analysis
+
+        try:
+            with open(deck_path, 'r') as f:
+                for line_num, line in enumerate(f, 1):
+                    line_stripped = line.strip().lower()
+
+                    # Check for measurement lines
+                    if '.meas' in line_stripped:
+                        # Check cp2q_del1
+                        if 'cp2q_del1' in line_stripped:
+                            internal_pattern = re.search(r'v\(([A-Z0-9]+\.[A-Z0-9_]+)\)', line, re.IGNORECASE)
+                            output_pattern = re.search(r'v\(([A-Z0-9_]+)\)', line, re.IGNORECASE)
+
+                            if internal_pattern:
+                                internal_node_analysis['cp2q_del1_internal'] = True
+                                internal_node_analysis['internal_node_patterns'].append({
+                                    'line': line_num,
+                                    'measurement': 'cp2q_del1',
+                                    'node': internal_pattern.group(1),
+                                    'type': 'internal'
+                                })
+                            elif output_pattern:
+                                internal_node_analysis['cp2q_del1_internal'] = False
+                                internal_node_analysis['internal_node_patterns'].append({
+                                    'line': line_num,
+                                    'measurement': 'cp2q_del1',
+                                    'node': output_pattern.group(1),
+                                    'type': 'output'
+                                })
+
+                        # Check cp2q_del2
+                        elif 'cp2q_del2' in line_stripped:
+                            internal_pattern = re.search(r'v\(([A-Z0-9]+\.[A-Z0-9_]+)\)', line, re.IGNORECASE)
+                            output_pattern = re.search(r'v\(([A-Z0-9_]+)\)', line, re.IGNORECASE)
+
+                            if internal_pattern:
+                                internal_node_analysis['cp2q_del2_internal'] = True
+                                internal_node_analysis['internal_node_patterns'].append({
+                                    'line': line_num,
+                                    'measurement': 'cp2q_del2',
+                                    'node': internal_pattern.group(1),
+                                    'type': 'internal'
+                                })
+                            elif output_pattern:
+                                internal_node_analysis['cp2q_del2_internal'] = False
+                                internal_node_analysis['internal_node_patterns'].append({
+                                    'line': line_num,
+                                    'measurement': 'cp2q_del2',
+                                    'node': output_pattern.group(1),
+                                    'type': 'output'
+                                })
+
+                        # Check final_state measurements
+                        elif 'final_state' in line_stripped:
+                            internal_pattern = re.search(r'v\(([A-Z0-9]+\.[A-Z0-9_]+)\)', line, re.IGNORECASE)
+                            output_pattern = re.search(r'v\(([A-Z0-9_]+)\)', line, re.IGNORECASE)
+
+                            if internal_pattern:
+                                internal_node_analysis['final_state_internal'] = True
+                                internal_node_analysis['internal_node_patterns'].append({
+                                    'line': line_num,
+                                    'measurement': 'final_state',
+                                    'node': internal_pattern.group(1),
+                                    'type': 'internal'
+                                })
+                            elif output_pattern:
+                                internal_node_analysis['final_state_internal'] = False
+                                internal_node_analysis['internal_node_patterns'].append({
+                                    'line': line_num,
+                                    'measurement': 'final_state',
+                                    'node': output_pattern.group(1),
+                                    'type': 'output'
+                                })
+
+        except Exception as e:
+            self.logger.error(f"Error detecting internal nodes in {deck_path}: {e}")
+
+        return internal_node_analysis
+
     def _generate_summary(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Generate analysis summary statistics."""
 
@@ -2169,6 +2269,177 @@ class ComplianceValidator:
             recommendations.append("Validate SPICE deck generation process for completeness and correctness")
 
         return recommendations
+
+
+class AlignmentAnalyzer:
+    """
+    Analyzes alignment between MCQC deck specifications and Template specifications.
+    Generates CSV reports comparing MCQC vs Template alignment.
+    """
+
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+
+    def check_alignment(self, mcqc_data: Dict, template_data: Dict, arc_name: str) -> Dict[str, Any]:
+        """
+        Check alignment between MCQC and Template specifications.
+
+        Args:
+            mcqc_data: MCQC deck analysis including internal node detection
+            template_data: Template arc definition with probe specification
+            arc_name: Arc name for reference
+
+        Returns:
+            Dict with alignment results for all measurement types
+        """
+        alignment = {
+            'arc_name': arc_name,
+            'cell_name': template_data.get('cell_name', 'Unknown'),
+            'constraint_pin': template_data.get('pin', 'Unknown'),
+            'related_pin': template_data.get('related_pin', 'Unknown'),
+            'when_condition': template_data.get('when', 'Unknown'),
+            'vector': template_data.get('vector', 'Unknown')
+        }
+
+        # Extract MCQC measurement status
+        measurements = mcqc_data.get('measurements', [])
+        cp2q_del1_present = any('cp2q_del1' in m.get('measurement_name', '') for m in measurements)
+        cp2q_del2_present = any('cp2q_del2' in m.get('measurement_name', '') for m in measurements)
+        final_state_present = any('final_state' in m.get('measurement_name', '') for m in measurements)
+
+        # Get internal node analysis
+        internal_analysis = mcqc_data.get('internal_node_analysis', {})
+
+        # Rule 1: cp2q_del1 - Always Match (always present in MCQC)
+        alignment['cp2q_del1_MCQC'] = 'ON' if cp2q_del1_present else 'OFF'
+        alignment['cp2q_del1_Template'] = 'N/A'  # Template doesn't control this
+        alignment['cp2q_del1_Match'] = 'Match'  # Always match
+
+        # Rule 2: cp2q_del2 alignment
+        alignment['cp2q_del2_MCQC'] = 'ON' if cp2q_del2_present else 'OFF'
+        alignment['cp2q_del2_Template'] = 'N/A'  # Template doesn't control this
+        if not cp2q_del2_present:  # OFF in MCQC
+            alignment['cp2q_del2_Match'] = 'Match'  # OFF + N/A = Match
+        else:  # ON in MCQC
+            alignment['cp2q_del2_Match'] = 'No Match'  # ON + N/A = No Match
+
+        # Rule 3: final_state alignment (Template has no per-arc control)
+        alignment['final_state_MCQC'] = 'ON' if final_state_present else 'OFF'
+        alignment['final_state_Template'] = 'OFF'  # Template default
+        if not final_state_present:  # OFF in MCQC
+            alignment['final_state_Match'] = 'Match'  # OFF + OFF = Match
+        else:  # ON in MCQC
+            alignment['final_state_Match'] = 'No Match'  # ON + OFF = No Match
+
+        # Rule 4: Internal node (probe) alignment
+        probe = template_data.get('probe', '')
+        probe_clean = probe.strip('{}').strip() if probe else ''
+
+        cp2q_del1_internal = internal_analysis.get('cp2q_del1_internal', None)
+
+        alignment['internal_node_MCQC'] = 'YES' if cp2q_del1_internal else 'NO'
+        alignment['probe_Template'] = probe_clean
+
+        if probe_clean in ['Q1 Q', 'Q1']:
+            # Template expects internal node
+            alignment['probe_Match'] = 'Match' if cp2q_del1_internal else 'No Match'
+        elif probe_clean == 'Q':
+            # Template expects output pin only
+            alignment['probe_Match'] = 'Match' if not cp2q_del1_internal else 'No Match'
+        else:
+            alignment['probe_Match'] = 'Unknown'
+
+        return alignment
+
+    def generate_alignment_csv(self, alignment_results: List[Dict], output_file: Path):
+        """Generate CSV file with MCQC vs Template alignment results."""
+        csv_columns = [
+            'arc', 'cell', 'constraint_pin', 'related_pin', 'when_cond', 'vector',
+            'cp2q_del1_MCQC', 'cp2q_del1_Template', 'cp2q_del1_Match',
+            'cp2q_del2_MCQC', 'cp2q_del2_Template', 'cp2q_del2_Match',
+            'final_state_MCQC', 'final_state_Template', 'final_state_Match',
+            'internal_node_MCQC', 'probe_Template', 'probe_Match'
+        ]
+
+        try:
+            with open(output_file, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
+                writer.writeheader()
+
+                for result in alignment_results:
+                    row = {
+                        'arc': result.get('arc_name', ''),
+                        'cell': result.get('cell_name', ''),
+                        'constraint_pin': result.get('constraint_pin', ''),
+                        'related_pin': result.get('related_pin', ''),
+                        'when_cond': result.get('when_condition', ''),
+                        'vector': result.get('vector', ''),
+                        'cp2q_del1_MCQC': result.get('cp2q_del1_MCQC', ''),
+                        'cp2q_del1_Template': result.get('cp2q_del1_Template', ''),
+                        'cp2q_del1_Match': result.get('cp2q_del1_Match', ''),
+                        'cp2q_del2_MCQC': result.get('cp2q_del2_MCQC', ''),
+                        'cp2q_del2_Template': result.get('cp2q_del2_Template', ''),
+                        'cp2q_del2_Match': result.get('cp2q_del2_Match', ''),
+                        'final_state_MCQC': result.get('final_state_MCQC', ''),
+                        'final_state_Template': result.get('final_state_Template', ''),
+                        'final_state_Match': result.get('final_state_Match', ''),
+                        'internal_node_MCQC': result.get('internal_node_MCQC', ''),
+                        'probe_Template': result.get('probe_Template', ''),
+                        'probe_Match': result.get('probe_Match', '')
+                    }
+                    writer.writerow(row)
+
+            if self.verbose:
+                print(f"Alignment CSV generated: {output_file}")
+
+        except Exception as e:
+            print(f"Error generating alignment CSV: {e}")
+
+    def generate_statistics_report(self, alignment_results: List[Dict], output_file: Path, processing_stats: Dict):
+        """Generate validation statistics text report."""
+        total_arcs = len(alignment_results)
+
+        # Count alignment results
+        cp2q_del2_mismatch = sum(1 for r in alignment_results if r.get('cp2q_del2_Match') == 'No Match')
+        final_state_mismatch = sum(1 for r in alignment_results if r.get('final_state_Match') == 'No Match')
+        probe_mismatch = sum(1 for r in alignment_results if r.get('probe_Match') == 'No Match')
+
+        stats_content = f"""MCQC vs Template Validation Statistics
+================================================================================
+
+Total Arcs Analyzed: {total_arcs}
+
+Alignment Statistics:
+  cp2q_del2 Misalignment:     {cp2q_del2_mismatch} arcs ({cp2q_del2_mismatch/total_arcs*100:.1f}%)
+  final_state Misalignment:   {final_state_mismatch} arcs ({final_state_mismatch/total_arcs*100:.1f}%)
+  probe Misalignment:         {probe_mismatch} arcs ({probe_mismatch/total_arcs*100:.1f}%)
+
+Processing Performance:
+  Total Time: {processing_stats.get('total_time', 0):.1f} minutes
+  Avg Time per Arc: {processing_stats.get('avg_time_per_arc', 0):.2f} seconds
+  Template Parsed: 1 time (cached for all arcs)
+  Parallel Workers: {processing_stats.get('parallel_workers', 1)}
+
+Optimization Summary:
+  [1] Template Caching: Parse template.tcl once (not {total_arcs} times)
+      - Speedup: Parse once at startup, reuse for all arcs
+
+  [2] Parallel Processing: {processing_stats.get('parallel_workers', 1)} workers
+      - Speedup: Process multiple arcs simultaneously
+
+  [3] Deck Stream Reading: Read only measurement lines
+      - Speedup: Skip loading entire file into memory
+"""
+
+        try:
+            with open(output_file, 'w') as f:
+                f.write(stats_content)
+
+            if self.verbose:
+                print(f"Statistics report generated: {output_file}")
+
+        except Exception as e:
+            print(f"Error generating statistics report: {e}")
 
 
 class ReportGenerator:
@@ -3382,6 +3653,72 @@ class ReportGenerator:
         return name_map.get(test_name, test_name.replace('_', ' ').title())
 
 
+def generate_simplified_text_report(validation_data: Dict, output_file: Path):
+    """
+    Generate simplified text report focusing on MCQC vs Template alignment.
+    Removes YAML generation and compliance sections.
+    """
+    arc_name = validation_data.get('arc_name', 'Unknown')
+    alignment = validation_data.get('alignment_result', {})
+    template_match = validation_data.get('template_match_result')
+    deck_analysis = validation_data.get('deck_analysis', {})
+    internal_analysis = deck_analysis.get('internal_node_analysis', {})
+
+    content = f"""================================================================================
+ARC VALIDATION REPORT
+================================================================================
+
+Arc: {arc_name}
+
+[1] Arc Identification
+Cell: {alignment.get('cell_name', 'Unknown')}
+Constraint Pin: {alignment.get('constraint_pin', 'Unknown')}
+Related Pin: {alignment.get('related_pin', 'Unknown')}
+When: {alignment.get('when_condition', 'Unknown')}
+
+[2] Template Match
+"""
+
+    if template_match and template_match.success:
+        content += f"""✓ Found in template.tcl (Lines {template_match.line_start}-{template_match.line_end})
+Probe: {alignment.get('probe_Template', 'Unknown')}
+"""
+    else:
+        content += """✗ Not found in template.tcl
+Probe: N/A
+"""
+
+    content += f"""
+[3] MCQC Deck Analysis
+cp2q_del1:      {alignment.get('cp2q_del1_MCQC', 'Unknown')}
+cp2q_del2:      {alignment.get('cp2q_del2_MCQC', 'Unknown')}
+final_state:    {alignment.get('final_state_MCQC', 'Unknown')}
+internal_node:  {alignment.get('internal_node_MCQC', 'Unknown')}"""
+
+    # Add details about detected internal nodes
+    if internal_analysis.get('internal_node_patterns'):
+        content += "\n\nInternal Node Details:"
+        for pattern in internal_analysis['internal_node_patterns']:
+            content += f"\n  {pattern['measurement']}: {pattern['node']} (line {pattern['line']})"
+
+    content += f"""
+
+[4] Alignment Check
+cp2q_del1:      {alignment.get('cp2q_del1_Match', 'Unknown')}
+cp2q_del2:      {alignment.get('cp2q_del2_Match', 'Unknown')} ({alignment.get('cp2q_del2_MCQC', 'Unknown')} in MCQC, {alignment.get('cp2q_del2_Template', 'N/A')} in Template)
+final_state:    {alignment.get('final_state_Match', 'Unknown')} ({alignment.get('final_state_MCQC', 'Unknown')} in MCQC, {alignment.get('final_state_Template', 'OFF')} in Template)
+probe:          {alignment.get('probe_Match', 'Unknown')} (Template expects {alignment.get('probe_Template', 'Unknown')}, MCQC uses {'internal node' if alignment.get('internal_node_MCQC') == 'YES' else 'output pin'})
+
+================================================================================
+"""
+
+    try:
+        with open(output_file, 'w') as f:
+            f.write(content)
+    except Exception as e:
+        print(f"Error writing simplified report to {output_file}: {e}")
+
+
 def process_single_arc(arc_data):
     """Worker function for parallel processing of single arc.
 
@@ -3455,14 +3792,17 @@ def process_single_arc(arc_data):
         )
         trace_time = time.time() - t1
 
-        # Step 2: Analyze deck
+        # Step 2: Analyze deck with internal node detection
         t2 = time.time()
         deck_analysis = analyzer.analyze_deck(mc_sim_file)
+        internal_node_analysis = analyzer.detect_internal_node_measurement(mc_sim_file)
+        deck_analysis['internal_node_analysis'] = internal_node_analysis
         deck_time = time.time() - t2
 
         # Step 3: Template matching (if template available)
         t3 = time.time()
         template_match_result = None
+        template_data = {}
         if template_file_to_use and template_file_to_use.exists():
             # Parse arc name for template matching
             arc_info = reporter._parse_arc_name(arc_name)
@@ -3474,29 +3814,44 @@ def process_single_arc(arc_data):
                 related_pin=arc_info.get('related_pin', ''),
                 when_condition=arc_info.get('when_condition', '')
             )
+
+            # Extract template data for alignment analysis
+            if template_match_result and template_match_result.success:
+                template_data = template_match_result.match_details or {}
         template_time = time.time() - t3
 
-        # Step 4: Validate compliance
+        # Step 4: Alignment analysis
         t4 = time.time()
+        alignment_analyzer = AlignmentAnalyzer(verbose=verbose)
+        alignment_result = alignment_analyzer.check_alignment(
+            mcqc_data=deck_analysis,
+            template_data=template_data,
+            arc_name=arc_name
+        )
+        alignment_time = time.time() - t4
+
+        # Step 5: Validate compliance (optional, only if needed)
+        t5 = time.time()
         validation_result = validator.validate_compliance(
             traceability_data=traceability_data,
             deck_analysis=deck_analysis,
             template_match_result=template_match_result
         )
-        validation_time = time.time() - t4
+        validation_time = time.time() - t5
 
-        # Create validation data (use the complete validation result)
+        # Create validation data with alignment results
         validation_data = validation_result
         validation_data['traceability_data'] = traceability_data
         validation_data['deck_analysis'] = deck_analysis
         validation_data['template_match_result'] = template_match_result
+        validation_data['alignment_result'] = alignment_result
 
-        # Step 5: Generate individual arc report
-        t5 = time.time()
+        # Step 6: Generate simplified text report (not YAML)
+        t6 = time.time()
         if not args.csv_only:
-            arc_report_file = arc_folder / f"{arc_name}_compliance_report.yaml"
-            reporter.generate_structured_report(validation_data, arc_report_file, args.chartcl_display)
-        report_time = time.time() - t5
+            arc_report_file = arc_folder / f"{arc_name}_alignment_report.txt"
+            generate_simplified_text_report(validation_data, arc_report_file)
+        report_time = time.time() - t6
 
         # Timing summary
         total_time = time.time() - arc_start_time
@@ -3657,6 +4012,9 @@ Examples:
 
     print(f"🔍 Processing {len(arc_folders)} arc folders...")
 
+    # Start timing for overall processing
+    start_time = time.time()
+
     # Process arc folders in parallel for maximum performance
     validation_results = []
 
@@ -3806,11 +4164,29 @@ Examples:
         print(f"   🕐 Total: {sequential_time:.1f}s ({sequential_time/total_arcs:.1f}s per arc)")
         print(f"   ⚡ Speed: {actual_speedup:.0f}x faster than original")
 
-    # Step 5: Generate CSV summaries
+    # Step 5: Generate alignment CSV and statistics
+    alignment_results = [result.get('alignment_result', {}) for result in validation_results if result.get('alignment_result')]
+
+    # Generate primary alignment CSV
+    alignment_csv_file = args.output_dir / "alignment_summary.csv"
+    alignment_analyzer = AlignmentAnalyzer(verbose=args.verbose)
+    alignment_analyzer.generate_alignment_csv(alignment_results, alignment_csv_file)
+
+    # Calculate processing statistics for report
+    processing_stats = {
+        'total_time': (time.time() - start_time) / 60,  # Convert to minutes
+        'avg_time_per_arc': (time.time() - start_time) / len(validation_results) if validation_results else 0,
+        'parallel_workers': args.parallel
+    }
+
+    # Generate statistics report
+    stats_file = args.output_dir / "validation_statistics.txt"
+    alignment_analyzer.generate_statistics_report(alignment_results, stats_file, processing_stats)
+
+    # Generate legacy CSV summaries for compatibility
     csv_file = args.output_dir / "compliance_summary.csv"
     reporter.generate_csv_summary(validation_results, csv_file)
 
-    # Generate template matching summary
     template_summary_file = args.output_dir / "template_matching_summary.csv"
     reporter.generate_template_matching_summary_csv(validation_results, template_summary_file)
 
@@ -3851,11 +4227,13 @@ Examples:
         print(f"   ✗ Arc not found:        {arc_not_found} arcs ({arc_not_found/total_with_template:.1%})")
 
     print(f"\n📁 Summary reports in: {args.output_dir}")
-    print(f"   📊 CSV summary: {csv_file}")
+    print(f"   📊 Primary Alignment CSV: {alignment_csv_file}")
+    print(f"   📈 Statistics Report: {stats_file}")
+    print(f"   📊 Legacy CSV summary: {csv_file}")
     print(f"   🎯 Template matching: {template_summary_file}")
 
     if not args.csv_only:
-        print(f"   📄 Individual arc reports: compliance_validation_report.txt in each arc directory")
+        print(f"   📄 Individual arc reports: [arc_name]_alignment_report.txt in each arc directory")
         print(f"   📈 Processed {len(validation_results)} arc directories")
 
     return 0
