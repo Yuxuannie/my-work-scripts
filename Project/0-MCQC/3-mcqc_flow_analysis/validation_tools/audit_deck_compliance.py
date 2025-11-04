@@ -3478,21 +3478,18 @@ def process_single_arc(arc_data):
 
         # Step 4: Validate compliance
         t4 = time.time()
-        compliance_tests = validator.validate_compliance(
+        validation_result = validator.validate_compliance(
             traceability_data=traceability_data,
             deck_analysis=deck_analysis,
             template_match_result=template_match_result
         )
         validation_time = time.time() - t4
 
-        # Create validation data
-        validation_data = {
-            'traceability_data': traceability_data,
-            'deck_analysis': deck_analysis,
-            'template_match_result': template_match_result,
-            'tests': compliance_tests,
-            'overall_status': 'PASS' if all(test.get('status') == 'PASS' for test in compliance_tests.values()) else 'FAIL'
-        }
+        # Create validation data (use the complete validation result)
+        validation_data = validation_result
+        validation_data['traceability_data'] = traceability_data
+        validation_data['deck_analysis'] = deck_analysis
+        validation_data['template_match_result'] = template_match_result
 
         # Step 5: Generate individual arc report
         t5 = time.time()
