@@ -43,6 +43,50 @@ except ImportError:
 PARSERS_AVAILABLE = False  # Always use basic parsing for reliability
 
 
+class TemplateMatchResult:
+    """Result of template.tcl arc matching"""
+    def __init__(self):
+        self.success = False
+        self.cell_found = False
+        self.arc_found = False
+        self.line_start = None
+        self.line_end = None
+        self.error_message = None
+        self.match_details = {}  # What matched, what didn't
+        self.extracted_content = ""
+        self.cell_name = ""
+        self.total_cells_searched = 0
+
+    def mark_success(self, line_start, line_end, content, cell_name, match_details):
+        """Mark as successful match"""
+        self.success = True
+        self.cell_found = True
+        self.arc_found = True
+        self.line_start = line_start
+        self.line_end = line_end
+        self.extracted_content = content
+        self.cell_name = cell_name
+        self.match_details = match_details
+
+    def mark_cell_not_found(self, cell_name, total_searched):
+        """Mark as cell not found"""
+        self.success = False
+        self.cell_found = False
+        self.arc_found = False
+        self.cell_name = cell_name
+        self.total_cells_searched = total_searched
+        self.error_message = f'Cell "{cell_name}" not found in template.tcl'
+
+    def mark_arc_not_found(self, cell_name, match_details):
+        """Mark as arc not found in cell"""
+        self.success = False
+        self.cell_found = True
+        self.arc_found = False
+        self.cell_name = cell_name
+        self.match_details = match_details
+        self.error_message = f'Arc not found in cell "{cell_name}"'
+
+
 class InputTraceabilityEngine:
     """
     Traces EVERY input that contributed to deck generation.
@@ -303,54 +347,30 @@ class InputTraceabilityEngine:
 
         return dict(arc_specs)
 
-    def extract_template_arc_definition(self, template_file: Path, cell_name: str, arc_type: str, related_pin: str, when_condition: str, arc_info: Dict = None) -> Dict:
+    def extract_template_arc_definition(self, template_file: Path, cell_name: str, arc_type: str, related_pin: str, when_condition: str, arc_info: Dict = None) -> TemplateMatchResult:
         """
         Find and extract the EXACT arc definition from template.tcl.
 
-        Handles Synopsys define_arc format:
-        define_arc \
-            -type min_pulse_width \
-            -when "!E&TE" \
-            -vector {Fxxx} \
-            -related_pin CPN \
-            -pin CPN \
-            -probe {Q1 Q} \
-            CELLNAME
-
-        Returns:
-        {
-            'found': True/False,
-            'line_start': 1234,
-            'line_end': 1240,
-            'raw_text': 'define_arc \\\n    -type min_pulse_width \\\n    ...',
-            'parsed_attributes': {
-                'type': 'min_pulse_width',
-                'related_pin': 'CPN',
-                'when': '!E&TE',
-                'vector': '{Fxxx}',
-                'pin': 'CPN',
-                'probe': '{Q1 Q}',
-                'cell_name': 'CELLNAME'
-            }
-        }
+        Returns TemplateMatchResult with detailed success/failure information.
         """
-        result = {
-            'found': False,
-            'line_start': None,
-            'line_end': None,
-            'raw_text': '',
-            'parsed_attributes': {},
-            'cell_line_start': None,
-            'cell_line_end': None,
-            'error': None
-        }
+        result = TemplateMatchResult()
+        total_cells_found = 0
+        total_arcs_found = 0
 
         try:
             with open(template_file, 'r') as f:
                 lines = f.readlines()
 
+            # Count total cells in template for reporting
+            content = ''.join(lines)
+            cell_pattern = r'\n\s*([A-Z][A-Z0-9_]{10,})\s*$'
+            all_cells = re.findall(cell_pattern, content, re.MULTILINE)
+            total_cells_found = len(set(all_cells))
+
             # Look for define_arc commands
             i = 0
+            cells_checked = set()
+
             while i < len(lines):
                 line = lines[i]
                 stripped = line.strip()
@@ -360,6 +380,7 @@ class InputTraceabilityEngine:
                     arc_start = i + 1  # 1-based line numbers
                     arc_lines = [line]
                     found_attributes = {}
+                    total_arcs_found += 1
 
                     # Collect the complete define_arc command (may span multiple lines with \)
                     j = i + 1
@@ -381,23 +402,14 @@ class InputTraceabilityEngine:
                     # Parse the complete define_arc command
                     full_command = ''.join(arc_lines)
 
-                    # DEBUG: Log the raw define_arc content
-                    self.logger.debug(f"Processing define_arc block at lines {arc_start}-{arc_end}:")
-                    self.logger.debug(f"Raw content: {repr(full_command)}")
-
                     # Extract attributes using regex patterns
                     type_match = re.search(r'-type\s+(\w+)', full_command)
                     if type_match:
                         found_attributes['type'] = type_match.group(1)
-                        self.logger.debug(f"Extracted type: {found_attributes['type']}")
 
                     when_match = re.search(r'-when\s+"([^"]+)"', full_command)
                     if when_match:
                         found_attributes['when'] = when_match.group(1)
-                        self.logger.debug(f"Extracted when condition: '{found_attributes['when']}'")
-                        self.logger.debug(f"Raw when match: {repr(when_match.group(0))}")
-                    else:
-                        self.logger.debug(f"No when condition found in: {repr(full_command)}")
 
                     vector_match = re.search(r'-vector\s+\{([^}]+)\}', full_command)
                     if vector_match:
@@ -419,131 +431,74 @@ class InputTraceabilityEngine:
                     cell_name_line = arc_lines[-1].strip()
                     if cell_name_line and not cell_name_line.endswith('\\'):
                         found_attributes['cell_name'] = cell_name_line
+                        cells_checked.add(cell_name_line)
 
                     # Check if this define_arc matches our criteria
-                    matches = True
-                    match_reasons = []
+                    match_details = {
+                        'cell_name_match': False,
+                        'arc_type_match': False,
+                        'related_pin_match': False,
+                        'when_condition_match': False,
+                        'found_attributes': found_attributes.copy()
+                    }
 
-                    # DEBUG: Log what we're trying to match
-                    self.logger.debug(f"Attempting to match arc with criteria:")
-                    self.logger.debug(f"  Looking for: cell_name='{cell_name}', arc_type='{arc_type}', related_pin='{related_pin}', when_condition='{when_condition}'")
-                    self.logger.debug(f"  Found in template: {found_attributes}")
+                    # Check cell name first (most selective)
+                    found_cell = found_attributes.get('cell_name', '')
+                    if found_cell == cell_name:
+                        match_details['cell_name_match'] = True
 
-                    # Check arc type (REQUIRED)
-                    if arc_type == 'min_pulse_width' and found_attributes.get('type') != 'min_pulse_width':
-                        matches = False
-                        match_reasons.append(f"Arc type mismatch: expected {arc_type}, found {found_attributes.get('type')}")
+                        # Cell matches, now check arc criteria
+                        if found_attributes.get('type') == arc_type:
+                            match_details['arc_type_match'] = True
 
-                    # Check related pin (REQUIRED)
-                    found_related_pin = found_attributes.get('related_pin', '')
-                    if found_related_pin != related_pin:
-                        matches = False
-                        match_reasons.append(f"Related pin mismatch: expected {related_pin}, found {found_related_pin}")
+                        if found_attributes.get('related_pin') == related_pin:
+                            match_details['related_pin_match'] = True
 
-                    # If arc_info is provided, check additional attributes
-                    if arc_info:
-                        # Check pin (if specified, should match constrained pin from arc name)
-                        constrained_pin = arc_info.get('constrained_pin', '')
-                        found_pin = found_attributes.get('pin', '')
-                        if constrained_pin and found_pin and found_pin != constrained_pin:
-                            matches = False
-                            match_reasons.append(f"Pin mismatch: expected {constrained_pin}, found {found_pin}")
-
-                        # Check when condition (if specified, should match)
+                        # Check when condition if both provided
                         found_when = found_attributes.get('when', '')
                         parsed_when = arc_info.get('when_condition', '') if arc_info else when_condition
 
-                        self.logger.debug(f"When condition comparison:")
-                        self.logger.debug(f"  Found in template: '{found_when}' (raw)")
-                        self.logger.debug(f"  Expected from arc: '{parsed_when}' (raw)")
-
                         if found_when and parsed_when:
-                            # Normalize BOTH when conditions for comparison
                             normalized_found = self.normalize_when_condition(found_when)
                             normalized_parsed = self.normalize_when_condition(parsed_when)
 
-                            self.logger.debug(f"  Found normalized: '{normalized_found}'")
-                            self.logger.debug(f"  Expected normalized: '{normalized_parsed}'")
+                            if normalized_found == normalized_parsed:
+                                match_details['when_condition_match'] = True
+                        elif not found_when and not parsed_when:
+                            match_details['when_condition_match'] = True  # Both empty
 
-                            if normalized_found != normalized_parsed:
-                                self.logger.debug(f"  MISMATCH: '{normalized_found}' != '{normalized_parsed}'")
-                                match_reasons.append(f"When condition mismatch: expected '{parsed_when}' (normalized: '{normalized_parsed}'), found '{found_when}' (normalized: '{normalized_found}')")
-                                matches = False
-                            else:
-                                # Log successful normalization for verification
-                                self.logger.debug(f"  MATCH: '{normalized_found}' == '{normalized_parsed}'")
-                        elif found_when or parsed_when:
-                            self.logger.debug(f"  Only one when condition specified - may still match if other criteria met")
-                        else:
-                            self.logger.debug(f"  No when conditions to compare")
+                        # If all required criteria match, we found it!
+                        if (match_details['cell_name_match'] and
+                            match_details['arc_type_match'] and
+                            match_details['related_pin_match'] and
+                            match_details['when_condition_match']):
 
-                        # Check vector (loosened criteria - log mismatch but don't fail match)
-                        found_vector = found_attributes.get('vector', '')
-                        parsed_vector = arc_info.get('vector', '')
-                        if found_vector and parsed_vector and found_vector != parsed_vector:
-                            # Log mismatch but don't fail the match (vectors can vary)
-                            match_reasons.append(f"Vector mismatch (not critical): expected {parsed_vector}, found {found_vector}")
-
-                    # Check cell name (use flexible matching - cell name should be contained)
-                    found_cell = found_attributes.get('cell_name', '')
-                    if found_cell and cell_name:
-                        # Try exact match first
-                        if found_cell != cell_name:
-                            # Try partial match (cell_name should be substring of found_cell or vice versa)
-                            if cell_name not in found_cell and found_cell not in cell_name:
-                                matches = False
-                                match_reasons.append(f"Cell name mismatch: expected {cell_name}, found {found_cell}")
-                    elif not found_cell:
-                        matches = False
-                        match_reasons.append("No cell name found in define_arc")
-
-                    # Store match debug info
-                    found_attributes['match_reasons'] = match_reasons
-
-                    self.logger.debug(f"Arc matching result: {'MATCH' if matches else 'NO MATCH'}")
-                    if not matches:
-                        self.logger.debug(f"  Reasons for no match: {match_reasons}")
-
-                    if matches:
-                        self.logger.info(f"Successfully matched arc at lines {arc_start}-{arc_end}")
-                        self.logger.info(f"  Template when condition: '{found_attributes.get('when', 'none')}'")
-                        self.logger.info(f"  Parsed when condition: '{parsed_when if 'parsed_when' in locals() else when_condition}'")
-                        result['found'] = True
-                        result['line_start'] = arc_start
-                        result['line_end'] = arc_end
-                        result['raw_text'] = ''.join(arc_lines)
-                        result['parsed_attributes'] = found_attributes
-                        return result
+                            result.mark_success(
+                                arc_start, arc_end,
+                                ''.join(arc_lines),
+                                cell_name,
+                                match_details
+                            )
+                            return result
 
                     # Continue searching from after this define_arc
                     i = j + 1
                 else:
                     i += 1
 
-            if not result['found']:
-                # Provide helpful debug information
-                all_define_arcs = []
-                with open(template_file, 'r') as f:
-                    content = f.read()
-                    define_arc_matches = re.finditer(r'define_arc.*?(?=\n\w|\ndefine_arc|\Z)', content, re.DOTALL)
-                    for match in define_arc_matches:
-                        arc_text = match.group(0)
-                        # Extract basic info for debugging
-                        type_match = re.search(r'-type\s+(\w+)', arc_text)
-                        pin_match = re.search(r'-related_pin\s+(\w+)', arc_text)
-                        cell_match = re.search(r'\n\s*([A-Z][A-Z0-9_]+)\s*$', arc_text)
-
-                        debug_info = {
-                            'type': type_match.group(1) if type_match else 'unknown',
-                            'pin': pin_match.group(1) if pin_match else 'unknown',
-                            'cell': cell_match.group(1) if cell_match else 'unknown'
-                        }
-                        all_define_arcs.append(debug_info)
-
-                result['error'] = f'No matching define_arc found for {arc_type} on {related_pin} in cell {cell_name}. Found {len(all_define_arcs)} define_arc commands: {all_define_arcs[:3]}'
+            # If we get here, no matching arc was found
+            # Check if cell was found at all
+            if cell_name in cells_checked:
+                result.mark_arc_not_found(cell_name, {
+                    'total_arcs_in_cell': len([c for c in cells_checked if c == cell_name]),
+                    'total_cells_searched': len(cells_checked),
+                    'total_arcs_searched': total_arcs_found
+                })
+            else:
+                result.mark_cell_not_found(cell_name, total_cells_found)
 
         except Exception as e:
-            result['error'] = f'Error parsing template.tcl: {e}'
+            result.error_message = f'Error parsing template.tcl: {e}'
 
         return result
 
@@ -568,14 +523,14 @@ class InputTraceabilityEngine:
 
         return key_lines
 
-    def extract_relevant_chartcl_vars(self, chartcl_file: Path, arc_type: str, cell_name: str, verbose: bool = False) -> Dict:
+    def extract_relevant_chartcl_vars(self, chartcl_file: Path, arc_type: str, cell_name: str, display_mode: str = 'relevant') -> Dict:
         """
-        Extract ONLY the char.tcl variables relevant to this specific arc.
+        Extract char.tcl variables based on display mode.
 
-        Relevance Criteria:
-        1. Arc-type specific variables (e.g., mpw_input_threshold for MPW arcs)
-        2. Cell-specific overrides (if any)
-        3. Global constraints that apply to this arc type
+        Display modes:
+        - minimal:  Only arc-type specific (1-2 vars)
+        - relevant: Arc-type + common constraints (3-5 vars)
+        - all:      All constraint-related variables
 
         Returns variables with their values, line numbers, and usage explanation.
         """
@@ -602,81 +557,81 @@ class InputTraceabilityEngine:
                             'raw_line': stripped
                         }
 
-            if verbose:
-                # verbose=True: Show all constraint-related variables (current behavior)
-                for var_name, var_info in all_vars.items():
-                    var_lower = var_name.lower()
-
-                    # Catch all constraint-related variables
-                    if any(pattern in var_lower for pattern in ['constraint', 'glitch', 'threshold', 'mpw', 'pulse_width', 'min_pulse']):
-                        relevant_vars[var_name] = {
-                            **var_info,
-                            'usage': f'Constraint-related setting: {var_name}',
-                            'relevance': 'Constraint/timing related'
-                        }
-            else:
-                # verbose=False: Show ONLY arc-type specific variables (concise mode)
+            if display_mode == 'minimal':
+                # Only essential for this arc type (1-2 variables)
                 if arc_type == 'min_pulse_width':
-                    # Show only MPW-specific variables
                     for var_name, var_info in all_vars.items():
                         var_lower = var_name.lower()
-                        if any(pattern in var_lower for pattern in ['mpw_input_threshold']):  # Only the most specific one
+                        if 'mpw_input_threshold' in var_lower:
                             relevant_vars[var_name] = {
                                 **var_info,
-                                'usage': f'MPW-specific setting: {var_name}',
-                                'relevance': 'Arc type specific (min_pulse_width)'
+                                'usage': f'MPW input threshold',
+                                'relevance': 'Arc type specific'
                             }
                 elif arc_type == 'setup':
-                    # Show only setup-specific variables
                     for var_name, var_info in all_vars.items():
                         var_lower = var_name.lower()
-                        if 'setup' in var_lower:
+                        if 'setup_threshold' in var_lower:
                             relevant_vars[var_name] = {
                                 **var_info,
-                                'usage': f'Setup-specific setting: {var_name}',
-                                'relevance': 'Arc type specific (setup)'
-                            }
-                elif arc_type == 'hold':
-                    # Show only hold-specific variables
-                    for var_name, var_info in all_vars.items():
-                        var_lower = var_name.lower()
-                        if 'hold' in var_lower:
-                            relevant_vars[var_name] = {
-                                **var_info,
-                                'usage': f'Hold-specific setting: {var_name}',
-                                'relevance': 'Arc type specific (hold)'
+                                'usage': f'Setup threshold',
+                                'relevance': 'Arc type specific'
                             }
 
-            # For backward compatibility, if no arc-specific vars found in concise mode, show at least one constraint var
-            if not verbose and not relevant_vars:
+            elif display_mode == 'relevant':
+                # Arc-type specific + common constraints (3-5 variables)
+                if arc_type == 'min_pulse_width':
+                    priority_patterns = ['mpw_input_threshold', 'constraint_glitch_peak', 'constraint_delay_degrade']
+                    for pattern in priority_patterns:
+                        for var_name, var_info in all_vars.items():
+                            var_lower = var_name.lower()
+                            if pattern in var_lower:
+                                relevant_vars[var_name] = {
+                                    **var_info,
+                                    'usage': f'MPW constraint setting',
+                                    'relevance': 'Arc type + constraints'
+                                }
+                elif arc_type == 'setup':
+                    priority_patterns = ['setup', 'constraint_glitch_peak', 'constraint_delay_degrade']
+                    for pattern in priority_patterns:
+                        for var_name, var_info in all_vars.items():
+                            var_lower = var_name.lower()
+                            if pattern in var_lower:
+                                relevant_vars[var_name] = {
+                                    **var_info,
+                                    'usage': f'Setup constraint setting',
+                                    'relevance': 'Arc type + constraints'
+                                }
+
+            elif display_mode == 'all':
+                # All constraint-related variables
                 for var_name, var_info in all_vars.items():
                     var_lower = var_name.lower()
-                    if any(pattern in var_lower for pattern in ['constraint', 'threshold']):
+                    if any(pattern in var_lower for pattern in [
+                        'constraint', 'glitch', 'threshold', 'mpw', 'pulse_width',
+                        'min_pulse', 'setup', 'hold', 'delay', 'margin', 'tolerance'
+                    ]):
                         relevant_vars[var_name] = {
                             **var_info,
-                            'usage': f'General constraint setting: {var_name}',
-                            'relevance': 'General constraint'
+                            'usage': f'Constraint-related setting',
+                            'relevance': 'All constraints'
                         }
-                        break  # Only show the first one found
 
-            # Cell-specific overrides (look for variables containing cell name)
-            cell_specific = {}
+            # Always add cell-specific overrides (regardless of display mode)
             for var_name, var_info in all_vars.items():
                 if cell_name.lower() in var_name.lower():
-                    cell_specific[var_name] = {
+                    relevant_vars[var_name] = {
                         **var_info,
                         'usage': f'Cell-specific override for {cell_name}',
                         'relevance': f'Cell specific ({cell_name})'
                     }
 
-            # Add cell-specific vars
-            relevant_vars.update(cell_specific)
-
             return {
                 'relevant_vars': relevant_vars,
                 'total_vars_in_file': len(all_vars),
                 'relevant_count': len(relevant_vars),
-                'suppressed_count': len(all_vars) - len(relevant_vars)
+                'suppressed_count': len(all_vars) - len(relevant_vars),
+                'display_mode': display_mode
             }
 
         except Exception as e:
@@ -2069,7 +2024,7 @@ class ReportGenerator:
 
         return logger
 
-    def generate_structured_report(self, validation_data: Dict[str, Any], output_path: Path) -> None:
+    def generate_structured_report(self, validation_data: Dict[str, Any], output_path: Path, display_mode: str = 'relevant') -> None:
         """
         Generate beautiful human-readable validation report.
 
@@ -2098,16 +2053,15 @@ class ReportGenerator:
         report_lines.extend(self._generate_arc_identification_section(arc_name, traceability_data, deck_analysis))
 
         # Input Specifications
-        report_lines.extend(self._generate_input_specifications_section(traceability_data, arc_name, deck_analysis))
+        report_lines.extend(self._generate_input_specifications_section(traceability_data, arc_name, deck_analysis, display_mode))
 
         # Generated Deck Analysis
         report_lines.extend(self._generate_deck_analysis_section(deck_analysis))
 
-        # Compliance Validation
-        report_lines.extend(self._generate_compliance_validation_section(tests, overall_status, deck_analysis))
+        # Skip Compliance Validation section - focusing on template extraction only
 
-        # Recommendations
-        report_lines.extend(self._generate_recommendations_section(validation_data.get('recommendations', [])))
+        # Recommendations (optional)
+        # report_lines.extend(self._generate_recommendations_section(validation_data.get('recommendations', [])))
 
         # Footer
         report_lines.extend(self._generate_report_footer())
@@ -2394,7 +2348,7 @@ class ReportGenerator:
 
         return lines
 
-    def _generate_input_specifications_section(self, traceability_data: Dict, arc_name: str, deck_analysis: Dict) -> List[str]:
+    def _generate_input_specifications_section(self, traceability_data: Dict, arc_name: str, deck_analysis: Dict, display_mode: str = 'relevant') -> List[str]:
         """Generate the input specifications section."""
         lines = self._create_main_section_divider("INPUT SPECIFICATIONS")
 
@@ -2404,11 +2358,11 @@ class ReportGenerator:
 
         # [A] Template.tcl Specifications
         if 'template' in input_sources:
-            lines.extend(self._format_template_specifications(input_sources['template'], arc_info))
+            lines.extend(self._format_template_specifications(input_sources['template'], arc_info, display_mode))
 
         # [B] Chartcl.tcl Variables
         if 'chartcl' in input_sources:
-            lines.extend(self._format_chartcl_specifications(input_sources['chartcl'], arc_info))
+            lines.extend(self._format_chartcl_specifications(input_sources['chartcl'], arc_info, display_mode))
 
         # [C] Globals File Configuration
         globals_sources = {k: v for k, v in input_sources.items() if k.startswith('globals_')}
@@ -2488,20 +2442,7 @@ class ReportGenerator:
             ""
         ])
 
-        # Enhanced specifications (not yet required)
-        lines.extend([
-            "Enhanced Specifications (Not Yet Required):",
-            "",
-            "  ⊗ [N/A]  final_state measurement not specified in template.tcl",
-            "           Current Status: Not present in deck (acceptable)",
-            "",
-            "  ⊗ [N/A]  cp2q_del2 monitoring not specified in template.tcl",
-            "           Current Status: Only cp2q_del1 present (acceptable)",
-            "",
-            "  ⊗ [N/A]  measurement_node not specified in template.tcl",
-            "           Current Status: Using standard output pin (acceptable)",
-            ""
-        ])
+        # Skip Enhanced Specifications - focusing on actual template.tcl content only
 
         # Compliance summary
         required_checks = 3  # cp2q_del1, arc type, pin relationships
@@ -2724,8 +2665,8 @@ class ReportGenerator:
 
         return result
 
-    def _format_template_specifications(self, template_data: Dict, arc_info: Dict) -> List[str]:
-        """Format template.tcl specifications section with actual arc extraction."""
+    def _format_template_specifications(self, template_data: Dict, arc_info: Dict, display_mode: str = 'relevant') -> List[str]:
+        """Format template.tcl specifications section with success flags."""
         lines = self._create_subsection_divider("Template.tcl Specifications", "[A]")
         lines.extend([
             f"File:               {template_data.get('file_path', 'unknown')}",
@@ -2742,123 +2683,149 @@ class ReportGenerator:
 
             # Use the new extraction method
             tracer = InputTraceabilityEngine()
-            arc_def = tracer.extract_template_arc_definition(
+            result = tracer.extract_template_arc_definition(
                 template_file, cell_name, arc_type, related_pin, when_condition, arc_info
             )
 
-            if arc_def['found']:
+            # Template Matching Status section
+            lines.extend([
+                "Template Matching Status:",
+                f"  {'✓' if result.cell_found else '✗'} Cell Found:         {'YES' if result.cell_found else 'NO'} ({cell_name})",
+                f"  {'✓' if result.arc_found else '✗'} Arc Found:          {'YES' if result.arc_found else 'N/A' if not result.cell_found else 'NO'}",
+                f"  {'✓' if result.success else '✗'} Line Extraction:    {'SUCCESS' if result.success else 'FAILED'} {f'(Lines {result.line_start}-{result.line_end})' if result.success else ''}",
+                ""
+            ])
+
+            if result.success:
+                # Show match details
+                match_details = result.match_details
                 lines.extend([
-                    f"Cell Definition:    Line {arc_def['cell_line_start']}-{arc_def['cell_line_end']} (cell {cell_name})",
-                    f"Arc Definition:     Line {arc_def['line_start']}-{arc_def['line_end']}",
+                    "Match Details:",
+                    f"  • Cell name:          {'MATCHED ✓' if match_details.get('cell_name_match') else 'NOT MATCHED ✗'}",
+                    f"  • Arc type:           {'MATCHED ✓' if match_details.get('arc_type_match') else 'NOT MATCHED ✗'} ({arc_type})",
+                    f"  • Related pin:        {'MATCHED ✓' if match_details.get('related_pin_match') else 'NOT MATCHED ✗'} ({related_pin})",
+                    f"  • When condition:     {'MATCHED ✓' if match_details.get('when_condition_match') else 'NOT MATCHED ✗'} ({when_condition})",
                     "",
                     "Extracted Arc Definition from Template.tcl:",
-                    "-" * 40
+                    "-" * 80
                 ])
 
                 # Format the raw text with line numbers
-                raw_lines = arc_def['raw_text'].split('\n')
+                raw_lines = result.extracted_content.split('\n')
                 for i, line in enumerate(raw_lines):
                     if line.strip():
-                        line_num = arc_def['line_start'] + i
-                        lines.append(f"  {line} [Line {line_num}]")
+                        line_num = result.line_start + i
+                        lines.append(f"  {line}")
 
                 lines.extend([
-                    "-" * 40,
+                    "-" * 80,
                     "",
-                    "Parsed Attributes Found in Template.tcl:"
+                    "Template.tcl Attributes Found:"
                 ])
 
-                attrs = arc_def['parsed_attributes']
+                attrs = match_details.get('found_attributes', {})
                 for attr_name, attr_value in attrs.items():
-                    status = "✓" if attr_value else "⊗"
-                    lines.append(f"  {status} {attr_name:<16} \"{attr_value}\"")
-
-                lines.append("")
+                    if attr_name != 'match_reasons':  # Skip internal debugging
+                        status = "✓" if attr_value else "⊗"
+                        line_info = f"[Line {result.line_start}+]" if result.line_start else ""
+                        lines.append(f"  {status} {attr_name:<18} \"{attr_value}\" {line_info}")
 
             else:
+                # Show error details
                 lines.extend([
-                    f"❌ Arc Definition: NOT FOUND",
-                    f"   Search Target:  {arc_type} on {related_pin}",
-                    f"   Cell:           {cell_name}",
-                    f"   Error:          {arc_def.get('error', 'Unknown error')}",
-                    ""
+                    "Error Details:",
+                    f"  {result.error_message}",
                 ])
 
-        lines.extend([
-            "Enhanced Specifications (Future - Not Yet in Template.tcl):",
-            "  ⊗ final_state_check:      Not specified",
-            "  ⊗ monitoring_cycles:      Not specified",
-            "  ⊗ measurement_node:       Not specified",
-            "",
-            "Note: Enhanced specifications would appear in future template.tcl as:",
-            "      final_state_check: true;",
-            "      monitoring_cycles: 2;",
-            "      measurement_node: \"Q\";",
-            ""
-        ])
+                if not result.cell_found:
+                    lines.extend([
+                        f"  Searched in: {result.total_cells_searched} cells",
+                        f"  Suggestion: Check if cell name parsing from deck is correct"
+                    ])
+                elif not result.arc_found:
+                    lines.extend([
+                        f"  Cell found but arc not matched",
+                        f"  Suggestion: Check arc type, related pin, or when condition"
+                    ])
 
+        lines.append("")
         return lines
 
-    def _format_chartcl_specifications(self, chartcl_data: Dict, arc_info: Dict) -> List[str]:
-        """Format chartcl.tcl specifications section with relevance filtering."""
-        lines = self._create_subsection_divider("Chartcl.tcl Variables", "[B]")
+    def generate_template_matching_summary_csv(self, arc_results: List[Dict], output_path: Path) -> None:
+        """Generate CSV summary of template matching results for batch analysis."""
+
+        csv_content = [
+            "DeckName,CellName,TemplateMatchSuccess,CellFound,ArcFound,LinesExtracted,ErrorMessage"
+        ]
+
+        for result in arc_results:
+            arc_name = result.get('arc_name', 'unknown')
+            deck_name = arc_name if arc_name != 'unknown' else 'unknown'
+
+            # Extract template matching result if available
+            template_result = result.get('template_match_result')
+
+            if template_result:
+                cell_name = template_result.cell_name or 'unknown'
+                success = 'SUCCESS' if template_result.success else 'FAILED'
+                cell_found = 'YES' if template_result.cell_found else 'NO'
+                arc_found = 'YES' if template_result.arc_found else 'N/A' if not template_result.cell_found else 'NO'
+                lines = f'"{template_result.line_start}-{template_result.line_end}"' if template_result.success else '""'
+                error = template_result.error_message or ''
+                error = error.replace('"', '""')  # Escape quotes for CSV
+            else:
+                # Fallback for results without template matching data
+                traceability = result.get('traceability_data', {})
+                input_sources = traceability.get('input_sources', {})
+                template_data = input_sources.get('template', {})
+
+                cell_name = 'unknown'
+                success = 'UNKNOWN'
+                cell_found = 'UNKNOWN'
+                arc_found = 'UNKNOWN'
+                lines = '""'
+                error = 'No template matching data available'
+
+            csv_row = f'{deck_name},{cell_name},{success},{cell_found},{arc_found},{lines},"{error}"'
+            csv_content.append(csv_row)
+
+        # Write CSV file
+        with open(output_path, 'w') as f:
+            f.write('\n'.join(csv_content))
+
+    def _format_chartcl_specifications(self, chartcl_data: Dict, arc_info: Dict, display_mode: str = 'relevant') -> List[str]:
+        """Format chartcl.tcl specifications section with display mode options."""
+        lines = self._create_subsection_divider(f"Chartcl.tcl Variables [Display Mode: {display_mode}]", "[B]")
         lines.extend([
             f"File:               {chartcl_data.get('file_path', 'unknown')}",
             ""
         ])
 
-        # Use new relevant variable extraction
+        # Use new display mode variable extraction
         chartcl_file = Path(chartcl_data.get('file_path', ''))
         if chartcl_file.exists():
             cell_name = arc_info.get('cell_name', 'unknown')
             arc_type = arc_info.get('arc_type', 'unknown')
 
             tracer = InputTraceabilityEngine()
-            chartcl_verbose = chartcl_data.get('chartcl_verbose', False)  # Get the stored verbose flag
-            relevant_vars = tracer.extract_relevant_chartcl_vars(chartcl_file, arc_type, cell_name, chartcl_verbose)
+            relevant_vars = tracer.extract_relevant_chartcl_vars(chartcl_file, arc_type, cell_name, display_mode)
 
             if relevant_vars.get('relevant_vars'):
-                lines.extend([
-                    "Relevant Variables for this Arc:",
-                    "-" * 40
-                ])
-
-                for i, (var_name, var_info) in enumerate(relevant_vars['relevant_vars'].items(), 1):
+                for var_name, var_info in relevant_vars['relevant_vars'].items():
                     line_num = var_info.get('line', 'unknown')
                     value = var_info.get('value', 'unknown')
-                    usage = var_info.get('usage', 'Unknown usage')
-                    relevance = var_info.get('relevance', 'Unknown relevance')
+                    lines.append(f"{var_name:<25} {value:<15} [Line {line_num}]")
 
-                    lines.extend([
-                        f"  [{i}] {var_name} [Line {line_num}]",
-                        f"      Value:          {value}",
-                        f"      Usage:          {usage}",
-                        f"      Applied to:     {relevance}"
-                    ])
-
-                    if i < len(relevant_vars['relevant_vars']):
-                        lines.append("")
-
-                lines.extend([
-                    "-" * 40,
-                    ""
-                ])
+                lines.append("")
 
                 suppressed = relevant_vars.get('suppressed_count', 0)
                 if suppressed > 0:
-                    if chartcl_verbose:
-                        lines.extend([
-                            "Variables NOT Relevant to this Arc:",
-                            f"  (Note: All {relevant_vars.get('total_vars_in_file', 0)} variables shown due to --chartcl-verbose flag)",
-                            ""
-                        ])
-                    else:
-                        lines.extend([
-                            "Variables NOT Relevant to this Arc:",
-                            f"  (Suppressed: {suppressed} other char.tcl variables not applicable to {arc_type} arcs)",
-                            f"  (Use --chartcl-verbose to show all {relevant_vars.get('total_vars_in_file', 0)} char.tcl variables)",
-                            ""
-                    ])
+                    if display_mode == 'minimal':
+                        lines.append(f"({suppressed} other variables not shown. Use --chartcl-display=relevant to show more)")
+                    elif display_mode == 'relevant':
+                        lines.append(f"({suppressed} other variables not shown. Use --chartcl-display=all to show all)")
+                    lines.append("")
+
             else:
                 lines.extend([
                     "❌ No relevant variables found or error parsing char.tcl",
@@ -3284,9 +3251,13 @@ Examples:
         help='Enable verbose logging'
     )
     parser.add_argument(
-        '--chartcl-verbose',
-        action='store_true',
-        help='Show all char.tcl variables (default: show only arc-specific)'
+        '--chartcl-display',
+        choices=['minimal', 'relevant', 'all'],
+        default='relevant',
+        help='''Control char.tcl variable display:
+            minimal:  Show only arc-type specific (e.g., mpw_input_threshold for MPW)
+            relevant: Show arc-type + common constraints (default)
+            all:      Show all constraint-related variables'''
     )
     parser.add_argument(
         '--csv_only',
@@ -3346,19 +3317,42 @@ Examples:
                 template_file=args.template_file,
                 chartcl_file=args.chartcl_file,
                 globals_file=args.globals_file,
-                chartcl_verbose=getattr(args, 'chartcl_verbose', False)
+                chartcl_verbose=args.chartcl_display == 'all'  # Legacy support - 'all' mode = verbose
             )
 
             # Step 2: Analyze mc_sim.sp deck
             mc_sim_file = arc_folder / "mc_sim.sp"
             deck_analysis = analyzer.analyze_deck(mc_sim_file)
 
-            # Step 3: Validate compliance
+            # Step 3: Extract template matching result for CSV summary
+            template_match_result = None
+            input_sources = traceability_data.get('input_sources', {})
+            if 'template' in input_sources:
+                template_file_path = Path(input_sources['template'].get('file_path', ''))
+                if template_file_path.exists():
+                    # Parse arc name to get matching criteria
+                    arc_name = arc_folder.name
+                    from audit_deck_compliance import ReportGenerator
+                    report_gen = ReportGenerator()
+                    arc_info = report_gen._parse_arc_name(arc_name)
+
+                    template_match_result = tracer.extract_template_arc_definition(
+                        template_file_path,
+                        arc_info.get('cell_name', 'unknown'),
+                        arc_info.get('arc_type', 'unknown'),
+                        arc_info.get('related_pin', 'unknown'),
+                        arc_info.get('when_condition', 'unknown'),
+                        arc_info
+                    )
+
+            # Step 4: Validate compliance
             validation_result = validator.validate_compliance(traceability_data, deck_analysis)
 
             # Add source data to validation result
             validation_result['traceability_data'] = traceability_data
             validation_result['deck_analysis'] = deck_analysis
+            validation_result['arc_name'] = arc_folder.name
+            validation_result['template_match_result'] = template_match_result
 
             validation_results.append(validation_result)
 
@@ -3366,7 +3360,7 @@ Examples:
             if not args.csv_only:
                 # Save individual arc report in the arc directory itself
                 arc_report_file = arc_folder / "compliance_validation_report.txt"
-                reporter.generate_structured_report(validation_result, arc_report_file)
+                reporter.generate_structured_report(validation_result, arc_report_file, args.chartcl_display)
                 print(f"  📄 Arc report: {arc_report_file}")
 
             print(f"  ✅ Status: {validation_result['overall_status']}")
@@ -3385,9 +3379,13 @@ Examples:
             }
             validation_results.append(error_result)
 
-    # Step 5: Generate CSV summary
+    # Step 5: Generate CSV summaries
     csv_file = args.output_dir / "compliance_summary.csv"
     reporter.generate_csv_summary(validation_results, csv_file)
+
+    # Generate template matching summary
+    template_summary_file = args.output_dir / "template_matching_summary.csv"
+    reporter.generate_template_matching_summary_csv(validation_results, template_summary_file)
 
     # Print summary
     print(f"\n📊 Validation Summary:")
@@ -3401,8 +3399,33 @@ Examples:
     pass_rate = statuses.count('PASS') / len(statuses) if statuses else 0.0
     print(f"   Overall pass rate: {pass_rate:.1%}")
 
+    # Template matching statistics
+    template_successes = 0
+    cell_not_found = 0
+    arc_not_found = 0
+    total_with_template = 0
+
+    for result in validation_results:
+        template_result = result.get('template_match_result')
+        if template_result:
+            total_with_template += 1
+            if template_result.success:
+                template_successes += 1
+            elif not template_result.cell_found:
+                cell_not_found += 1
+            else:
+                arc_not_found += 1
+
+    if total_with_template > 0:
+        template_success_rate = template_successes / total_with_template
+        print(f"\n🎯 Template.tcl Matching Results:")
+        print(f"   ✓ Successfully matched: {template_successes} arcs ({template_success_rate:.1%})")
+        print(f"   ✗ Cell not found:       {cell_not_found} arcs ({cell_not_found/total_with_template:.1%})")
+        print(f"   ✗ Arc not found:        {arc_not_found} arcs ({arc_not_found/total_with_template:.1%})")
+
     print(f"\n📁 Summary reports in: {args.output_dir}")
     print(f"   📊 CSV summary: {csv_file}")
+    print(f"   🎯 Template matching: {template_summary_file}")
 
     if not args.csv_only:
         print(f"   📄 Individual arc reports: compliance_validation_report.txt in each arc directory")
