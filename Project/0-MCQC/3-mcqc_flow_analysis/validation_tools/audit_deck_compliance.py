@@ -3674,11 +3674,10 @@ def find_arcs_to_process(deck_dir: Path, output_dir: Path, force: bool = False):
     arcs_to_process = []
     arcs_skipped = []
 
-    report_dir = output_dir / "arc_reports"
-
     for arc_folder in all_arc_paths:
         arc_name = arc_folder.name
-        report_file = report_dir / f"{arc_name}_alignment_report.txt"
+        # Reports are saved in the arc directories themselves
+        report_file = arc_folder / f"{arc_name}_alignment_report.txt"
 
         if report_file.exists():
             arcs_skipped.append(arc_folder)
@@ -4204,7 +4203,7 @@ Examples:
     # Filter arcs based on --force flag
     if not args.force and args.deck_dir:
         print(f"🔍 Checking for existing reports (use --force to reprocess all)...")
-        arc_folders, skipped_arcs = find_arcs_to_process(arc_folders, args.output_dir)
+        arc_folders, skipped_arcs = find_arcs_to_process(args.deck_dir, args.output_dir, force=args.force)
         if skipped_arcs:
             print(f"   ⏭️  Skipped {len(skipped_arcs)} arcs with existing reports")
 
