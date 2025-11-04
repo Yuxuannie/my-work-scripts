@@ -77,7 +77,7 @@ class TemplateMatchResult:
         self.arc_found = False
         self.cell_name = cell_name
         self.total_cells_searched = total_searched
-        self.error_message = f'Cell "{cell_name}" not found in template.tcl'
+        self.error_message = f"Cell '{cell_name}' not found in template.tcl"
 
     def mark_arc_not_found(self, cell_name, match_details):
         """Mark as arc not found in cell"""
@@ -86,7 +86,7 @@ class TemplateMatchResult:
         self.arc_found = False
         self.cell_name = cell_name
         self.match_details = match_details
-        self.error_message = f'Arc not found in cell "{cell_name}"'
+        self.error_message = f"Arc not found in cell '{cell_name}'"
 
 
 class InputTraceabilityEngine:
@@ -577,7 +577,7 @@ class InputTraceabilityEngine:
             })
 
         except Exception as e:
-            result.error_message = f'Error using cached template data: {e}'
+            result.error_message = f"Error using cached template data: {e}"
 
         return result
 
