@@ -26,6 +26,7 @@ import csv
 import json
 import re
 import argparse
+import time
 from pathlib import Path
 from collections import defaultdict, Counter
 from typing import Dict, List, Tuple, Optional, Any, Set
@@ -96,11 +97,154 @@ class InputTraceabilityEngine:
     - chartcl.tcl configurations → measurement setups
     - globals files → parameter values
     - Python logic → final-state patterns
+
+    PERFORMANCE OPTIMIZATION: Template files are parsed ONCE and cached in memory
+    to avoid re-parsing for every arc (critical for processing 1000+ arcs).
     """
 
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self.logger = self._setup_logging()
+
+        # Template caching for performance (critical for 1000+ arcs)
+        self._template_cache = {}  # file_path -> parsed template data
+        self._template_parse_count = 0
+
+    def get_cached_template_data(self, template_file_path: Path) -> Dict:
+        """
+        Parse template.tcl once and cache in memory for subsequent arcs.
+
+        This is the CRITICAL performance optimization - parsing template.tcl
+        for every arc is extremely expensive (1246 times vs 1 time).
+        """
+        template_path_str = str(template_file_path)
+
+        if template_path_str not in self._template_cache:
+            if self.verbose:
+                print(f"🔄 Parsing template.tcl: {template_file_path} (first time)")
+
+            start_time = time.time()
+
+            # Parse template.tcl and extract all arc definitions
+            template_data = self._parse_template_file_complete(template_file_path)
+
+            parse_time = time.time() - start_time
+            self._template_parse_count += 1
+
+            self._template_cache[template_path_str] = template_data
+
+            print(f"✅ Template parsed and cached: {len(template_data.get('arcs', []))} arcs in {parse_time:.2f}s")
+        else:
+            if self.verbose:
+                print(f"♻️  Using cached template data: {template_file_path}")
+
+        return self._template_cache[template_path_str]
+
+    def _parse_template_file_complete(self, template_file: Path) -> Dict:
+        """
+        Parse entire template.tcl file and extract all arc definitions.
+
+        Returns structure optimized for fast lookups by cell name and arc criteria.
+        """
+        arcs_by_cell = {}  # cell_name -> list of arc definitions
+        total_arcs = 0
+
+        try:
+            with open(template_file, 'r') as f:
+                lines = f.readlines()
+
+            # Parse all define_arc commands
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                stripped = line.strip()
+
+                if stripped.startswith('define_arc'):
+                    arc_start = i + 1  # 1-based line numbers
+                    arc_lines = [line]
+
+                    # Collect the complete define_arc command
+                    j = i + 1
+                    while j < len(lines):
+                        next_line = lines[j]
+                        arc_lines.append(next_line)
+
+                        if not next_line.strip().endswith('\\') and next_line.strip():
+                            arc_end = j + 1
+                            break
+                        j += 1
+                    else:
+                        i += 1
+                        continue
+
+                    # Parse the arc definition
+                    full_command = ''.join(arc_lines)
+                    arc_def = self._extract_arc_attributes(full_command, arc_start, arc_end)
+
+                    if arc_def and arc_def.get('cell_name'):
+                        cell_name = arc_def['cell_name']
+                        if cell_name not in arcs_by_cell:
+                            arcs_by_cell[cell_name] = []
+                        arcs_by_cell[cell_name].append(arc_def)
+                        total_arcs += 1
+
+                    i = j + 1
+                else:
+                    i += 1
+
+        except Exception as e:
+            self.logger.error(f"Error parsing template file {template_file}: {e}")
+            return {'arcs_by_cell': {}, 'total_arcs': 0, 'parse_error': str(e)}
+
+        return {
+            'arcs_by_cell': arcs_by_cell,
+            'total_arcs': total_arcs,
+            'cells': list(arcs_by_cell.keys()),
+            'file_path': str(template_file)
+        }
+
+    def _extract_arc_attributes(self, full_command: str, line_start: int, line_end: int) -> Dict:
+        """Extract arc attributes from define_arc command text."""
+        attributes = {
+            'line_start': line_start,
+            'line_end': line_end,
+            'raw_text': full_command
+        }
+
+        # Extract attributes using regex patterns
+        type_match = re.search(r'-type\s+(\w+)', full_command)
+        if type_match:
+            attributes['type'] = type_match.group(1)
+
+        when_match = re.search(r'-when\s+"([^"]+)"', full_command)
+        if when_match:
+            attributes['when'] = when_match.group(1)
+
+        vector_match = re.search(r'-vector\s+\{([^}]+)\}', full_command)
+        if vector_match:
+            attributes['vector'] = f"{{{vector_match.group(1)}}}"
+
+        related_pin_match = re.search(r'-related_pin\s+(\w+)', full_command)
+        if related_pin_match:
+            attributes['related_pin'] = related_pin_match.group(1)
+
+        pin_match = re.search(r'-pin\s+(\w+)', full_command)
+        if pin_match:
+            attributes['pin'] = pin_match.group(1)
+
+        probe_match = re.search(r'-probe\s+\{([^}]+)\}', full_command)
+        if probe_match:
+            attributes['probe'] = f"{{{probe_match.group(1)}}}"
+
+        # Extract cell name (last non-empty line that doesn't end with \)
+        lines = full_command.split('\n')
+        for line in reversed(lines):
+            line = line.strip()
+            if line and not line.endswith('\\'):
+                attributes['cell_name'] = line
+                break
+
+        return attributes
 
     def normalize_when_condition(self, when_str: str) -> str:
         """
@@ -349,156 +493,87 @@ class InputTraceabilityEngine:
 
     def extract_template_arc_definition(self, template_file: Path, cell_name: str, arc_type: str, related_pin: str, when_condition: str, arc_info: Dict = None) -> TemplateMatchResult:
         """
-        Find and extract the EXACT arc definition from template.tcl.
+        Find and extract the EXACT arc definition from template.tcl using cached data.
 
+        PERFORMANCE OPTIMIZED: Uses cached template data instead of re-parsing file.
         Returns TemplateMatchResult with detailed success/failure information.
         """
         result = TemplateMatchResult()
-        total_cells_found = 0
-        total_arcs_found = 0
 
         try:
-            with open(template_file, 'r') as f:
-                lines = f.readlines()
+            # Use cached template data (CRITICAL performance optimization)
+            template_data = self.get_cached_template_data(template_file)
 
-            # Count total cells in template for reporting
-            content = ''.join(lines)
-            cell_pattern = r'\n\s*([A-Z][A-Z0-9_]{10,})\s*$'
-            all_cells = re.findall(cell_pattern, content, re.MULTILINE)
-            total_cells_found = len(set(all_cells))
+            if 'parse_error' in template_data:
+                result.error_message = template_data['parse_error']
+                return result
 
-            # Look for define_arc commands
-            i = 0
-            cells_checked = set()
+            arcs_by_cell = template_data.get('arcs_by_cell', {})
+            total_cells_found = len(template_data.get('cells', []))
 
-            while i < len(lines):
-                line = lines[i]
-                stripped = line.strip()
-
-                # Look for define_arc start
-                if stripped.startswith('define_arc'):
-                    arc_start = i + 1  # 1-based line numbers
-                    arc_lines = [line]
-                    found_attributes = {}
-                    total_arcs_found += 1
-
-                    # Collect the complete define_arc command (may span multiple lines with \)
-                    j = i + 1
-                    while j < len(lines):
-                        next_line = lines[j]
-                        arc_lines.append(next_line)
-
-                        # Check if this line ends the define_arc (no continuation \)
-                        if not next_line.strip().endswith('\\') and next_line.strip():
-                            # This should be the cell name line
-                            arc_end = j + 1
-                            break
-                        j += 1
-                    else:
-                        # Reached end of file without finding end
-                        i += 1
-                        continue
-
-                    # Parse the complete define_arc command
-                    full_command = ''.join(arc_lines)
-
-                    # Extract attributes using regex patterns
-                    type_match = re.search(r'-type\s+(\w+)', full_command)
-                    if type_match:
-                        found_attributes['type'] = type_match.group(1)
-
-                    when_match = re.search(r'-when\s+"([^"]+)"', full_command)
-                    if when_match:
-                        found_attributes['when'] = when_match.group(1)
-
-                    vector_match = re.search(r'-vector\s+\{([^}]+)\}', full_command)
-                    if vector_match:
-                        found_attributes['vector'] = f"{{{vector_match.group(1)}}}"
-
-                    related_pin_match = re.search(r'-related_pin\s+(\w+)', full_command)
-                    if related_pin_match:
-                        found_attributes['related_pin'] = related_pin_match.group(1)
-
-                    pin_match = re.search(r'-pin\s+(\w+)', full_command)
-                    if pin_match:
-                        found_attributes['pin'] = pin_match.group(1)
-
-                    probe_match = re.search(r'-probe\s+\{([^}]+)\}', full_command)
-                    if probe_match:
-                        found_attributes['probe'] = f"{{{probe_match.group(1)}}}"
-
-                    # Extract cell name (last non-empty line that doesn't end with \)
-                    cell_name_line = arc_lines[-1].strip()
-                    if cell_name_line and not cell_name_line.endswith('\\'):
-                        found_attributes['cell_name'] = cell_name_line
-                        cells_checked.add(cell_name_line)
-
-                    # Check if this define_arc matches our criteria
-                    match_details = {
-                        'cell_name_match': False,
-                        'arc_type_match': False,
-                        'related_pin_match': False,
-                        'when_condition_match': False,
-                        'found_attributes': found_attributes.copy()
-                    }
-
-                    # Check cell name first (most selective)
-                    found_cell = found_attributes.get('cell_name', '')
-                    if found_cell == cell_name:
-                        match_details['cell_name_match'] = True
-
-                        # Cell matches, now check arc criteria
-                        if found_attributes.get('type') == arc_type:
-                            match_details['arc_type_match'] = True
-
-                        if found_attributes.get('related_pin') == related_pin:
-                            match_details['related_pin_match'] = True
-
-                        # Check when condition if both provided
-                        found_when = found_attributes.get('when', '')
-                        parsed_when = arc_info.get('when_condition', '') if arc_info else when_condition
-
-                        if found_when and parsed_when:
-                            normalized_found = self.normalize_when_condition(found_when)
-                            normalized_parsed = self.normalize_when_condition(parsed_when)
-
-                            if normalized_found == normalized_parsed:
-                                match_details['when_condition_match'] = True
-                        elif not found_when and not parsed_when:
-                            match_details['when_condition_match'] = True  # Both empty
-
-                        # If all required criteria match, we found it!
-                        if (match_details['cell_name_match'] and
-                            match_details['arc_type_match'] and
-                            match_details['related_pin_match'] and
-                            match_details['when_condition_match']):
-
-                            result.mark_success(
-                                arc_start, arc_end,
-                                ''.join(arc_lines),
-                                cell_name,
-                                match_details
-                            )
-                            return result
-
-                    # Continue searching from after this define_arc
-                    i = j + 1
-                else:
-                    i += 1
-
-            # If we get here, no matching arc was found
-            # Check if cell was found at all
-            if cell_name in cells_checked:
-                result.mark_arc_not_found(cell_name, {
-                    'total_arcs_in_cell': len([c for c in cells_checked if c == cell_name]),
-                    'total_cells_searched': len(cells_checked),
-                    'total_arcs_searched': total_arcs_found
-                })
-            else:
+            # Fast lookup using cached data instead of parsing file again
+            if cell_name not in arcs_by_cell:
                 result.mark_cell_not_found(cell_name, total_cells_found)
+                return result
+
+            # Found cell, now search for matching arc in this cell's arcs
+            cell_arcs = arcs_by_cell[cell_name]
+
+            for arc_def in cell_arcs:
+                # Check if this arc matches our criteria
+                match_details = {
+                    'cell_name_match': True,  # Already confirmed above
+                    'arc_type_match': False,
+                    'related_pin_match': False,
+                    'when_condition_match': False,
+                    'found_attributes': arc_def.copy()
+                }
+
+                # Check arc type
+                if arc_def.get('type') == arc_type:
+                    match_details['arc_type_match'] = True
+
+                # Check related pin
+                if arc_def.get('related_pin') == related_pin:
+                    match_details['related_pin_match'] = True
+
+                # Check when condition if both provided
+                found_when = arc_def.get('when', '')
+                parsed_when = arc_info.get('when_condition', '') if arc_info else when_condition
+
+                if found_when and parsed_when:
+                    normalized_found = self.normalize_when_condition(found_when)
+                    normalized_parsed = self.normalize_when_condition(parsed_when)
+
+                    if normalized_found == normalized_parsed:
+                        match_details['when_condition_match'] = True
+                elif not found_when and not parsed_when:
+                    match_details['when_condition_match'] = True  # Both empty
+
+                # If all required criteria match, we found it!
+                if (match_details['cell_name_match'] and
+                    match_details['arc_type_match'] and
+                    match_details['related_pin_match'] and
+                    match_details['when_condition_match']):
+
+                    result.mark_success(
+                        arc_def.get('line_start'),
+                        arc_def.get('line_end'),
+                        arc_def.get('raw_text', ''),
+                        cell_name,
+                        match_details
+                    )
+                    return result
+
+            # If we get here, cell was found but no matching arc
+            result.mark_arc_not_found(cell_name, {
+                'total_arcs_in_cell': len(cell_arcs),
+                'total_cells_searched': 1,  # We only searched this cell
+                'total_arcs_searched': len(cell_arcs)
+            })
 
         except Exception as e:
-            result.error_message = f'Error parsing template.tcl: {e}'
+            result.error_message = f'Error using cached template data: {e}'
 
         return result
 
@@ -3308,10 +3383,12 @@ Examples:
     validation_results = []
 
     for i, arc_folder in enumerate(arc_folders, 1):
+        arc_start_time = time.time()
         print(f"[{i}/{len(arc_folders)}] Processing: {arc_folder.name}")
 
         try:
             # Step 1: Trace inputs using explicit files if provided
+            t1 = time.time()
             traceability_data = tracer.trace_arc_inputs(
                 arc_folder,
                 template_file=args.template_file,
@@ -3319,12 +3396,16 @@ Examples:
                 globals_file=args.globals_file,
                 chartcl_verbose=args.chartcl_display == 'all'  # Legacy support - 'all' mode = verbose
             )
+            trace_time = time.time() - t1
 
             # Step 2: Analyze mc_sim.sp deck
+            t2 = time.time()
             mc_sim_file = arc_folder / "mc_sim.sp"
             deck_analysis = analyzer.analyze_deck(mc_sim_file)
+            deck_time = time.time() - t2
 
             # Step 3: Extract template matching result for CSV summary
+            t3 = time.time()
             template_match_result = None
             input_sources = traceability_data.get('input_sources', {})
             if 'template' in input_sources:
@@ -3342,9 +3423,12 @@ Examples:
                         arc_info.get('when_condition', 'unknown'),
                         arc_info
                     )
+            template_time = time.time() - t3
 
             # Step 4: Validate compliance
+            t4 = time.time()
             validation_result = validator.validate_compliance(traceability_data, deck_analysis)
+            validation_time = time.time() - t4
 
             # Add source data to validation result
             validation_result['traceability_data'] = traceability_data
@@ -3354,13 +3438,25 @@ Examples:
 
             validation_results.append(validation_result)
 
-            # Step 4: Generate individual report in arc directory (unless CSV only)
+            # Step 5: Generate individual report in arc directory (unless CSV only)
+            t5 = time.time()
             if not args.csv_only:
                 # Save individual arc report in the arc directory itself
                 arc_report_file = arc_folder / "compliance_validation_report.txt"
                 reporter.generate_structured_report(validation_result, arc_report_file, args.chartcl_display)
                 print(f"  📄 Arc report: {arc_report_file}")
+            report_time = time.time() - t5
 
+            total_time = time.time() - arc_start_time
+
+            # Performance breakdown
+            print(f"  ⏱️  Timing breakdown:")
+            print(f"     Trace inputs:     {trace_time:.2f}s ({trace_time/total_time*100:.1f}%)")
+            print(f"     Deck analysis:    {deck_time:.2f}s ({deck_time/total_time*100:.1f}%)")
+            print(f"     Template match:   {template_time:.2f}s ({template_time/total_time*100:.1f}%)")
+            print(f"     Validation:       {validation_time:.2f}s ({validation_time/total_time*100:.1f}%)")
+            print(f"     Report gen:       {report_time:.2f}s ({report_time/total_time*100:.1f}%)")
+            print(f"     TOTAL:            {total_time:.2f}s")
             print(f"  ✅ Status: {validation_result['overall_status']}")
 
         except Exception as e:
