@@ -120,6 +120,190 @@ def detect_vendor_columns(df):
     logging.warning("Could not detect vendor, defaulting to CDNS_Lib")
     return 'CDNS_Lib'
  
+def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_prefix=None):
+    """
+    Unified pass checking function with structured waivers for both sigma and moments
+
+    Base Pass Criteria:
+    - Check 1: Error-Based Pass (rel_pass OR abs_pass)
+    - Check 2: CI Bounds Pass (lib value within MC CI bounds)
+    - Base Pass = Check 1 OR Check 2
+
+    Waivers:
+    - Waiver 1: CI Enlargement (CI ± 6%)
+    - Waiver 2: Optimistic Error Only (lib < mc)
+
+    Args:
+        row: DataFrame row with data
+        type_name: 'delay', 'slew', or 'hold'
+        param_name: Parameter name (e.g., 'Early_Sigma', 'Std', 'Meanshift')
+        mc_prefix: Prefix for MC columns (default: 'MC')
+        lib_prefix: Prefix for lib columns (auto-detect if None)
+
+    Returns:
+        dict: {
+            'base_pass': bool,
+            'pass_reason': str,  # rel_pass|abs_pass|ci_bounds|fail
+            'waiver1_ci_enlarged': bool,
+            'error_direction': 'optimistic'|'pessimistic',
+            'final_status': 'Pass'|'Waived_CI'|'Fail',
+            'abs_err': float,
+            'rel_err': float,
+            'mc_value': float,
+            'lib_value': float,
+            'mc_ci_lb': float,
+            'mc_ci_ub': float
+        }
+    """
+    arc_name = row['Arc']
+    logging.debug(f"Checking {param_name} for Arc: {arc_name}")
+
+    # Extract necessary values
+    rel_pin_slew = row['rel_pin_slew']
+
+    # Auto-detect lib prefix if not provided (for sigma files)
+    if lib_prefix is None:
+        lib_prefix = detect_vendor_columns(pd.DataFrame([row]))
+
+    try:
+        # Get MC and Lib values
+        mc_value = row[f"{mc_prefix}_{param_name}"]
+        lib_value = row[f"{lib_prefix}_{param_name}"]
+
+        # Get CI bounds
+        mc_ci_lb = row[f"{mc_prefix}_{param_name}_LB"]
+        mc_ci_ub = row[f"{mc_prefix}_{param_name}_UB"]
+
+        # Get or calculate errors
+        if f"{lib_prefix}_{param_name}_Dif" in row:
+            abs_err = row[f"{lib_prefix}_{param_name}_Dif"]  # Pre-calculated
+        else:
+            abs_err = lib_value - mc_value  # Calculate
+
+        if f"{lib_prefix}_{param_name}_Rel" in row:
+            rel_err = row[f"{lib_prefix}_{param_name}_Rel"]  # Pre-calculated
+        else:
+            rel_err = (lib_value - mc_value) / abs(mc_value) if mc_value != 0 else 0  # Calculate
+
+        logging.debug(f"  rel_pin_slew: {rel_pin_slew}")
+        logging.debug(f"  {mc_prefix}_{param_name}: {mc_value}")
+        logging.debug(f"  {lib_prefix}_{param_name}: {lib_value}")
+        logging.debug(f"  MC CI: [{mc_ci_lb}, {mc_ci_ub}]")
+        logging.debug(f"  abs_err: {abs_err}, rel_err: {rel_err}")
+
+    except KeyError as e:
+        logging.error(f"Missing column for {param_name}: {e}")
+        return {
+            'base_pass': False, 'pass_reason': 'missing_data', 'waiver1_ci_enlarged': False,
+            'error_direction': 'unknown', 'final_status': 'Fail',
+            'abs_err': None, 'rel_err': None, 'mc_value': None, 'lib_value': None,
+            'mc_ci_lb': None, 'mc_ci_ub': None
+        }
+
+    # Set thresholds based on type and parameter
+    if type_name == 'delay':
+        if param_name in ['Early_Sigma', 'Late_Sigma']:
+            rel_threshold = 0.03  # 3% for sigma
+            ps_value = 1
+            slew_multiplier = 0.005
+        elif param_name == 'Meanshift':
+            rel_threshold = 0.01  # 1% for moments meanshift
+            ps_value = 1
+            slew_multiplier = 0.005
+        elif param_name == 'Std':
+            rel_threshold = 0.02  # 2% for moments std
+            ps_value = 1
+            slew_multiplier = 0.005
+        else:  # Skew
+            rel_threshold = 0.05  # 5% for moments skew
+            ps_value = 1
+            slew_multiplier = 0.005
+    elif type_name == 'slew':
+        if param_name in ['Early_Sigma', 'Late_Sigma']:
+            rel_threshold = 0.06  # 6% for sigma
+            ps_value = 2
+            slew_multiplier = 0.01
+        elif param_name == 'Meanshift':
+            rel_threshold = 0.02  # 2% for moments meanshift
+            ps_value = 1  # 1ps for slew in moments script
+            slew_multiplier = 0.005
+        elif param_name == 'Std':
+            rel_threshold = 0.04  # 4% for moments std
+            ps_value = 1
+            slew_multiplier = 0.005
+        else:  # Skew
+            rel_threshold = 0.10  # 10% for moments skew
+            ps_value = 1
+            slew_multiplier = 0.005
+    else:  # hold
+        rel_threshold = 0.03  # 3% for hold
+        ps_value = 10
+        slew_multiplier = 0.005
+
+    # **CHECK 1: Error-Based Pass (rel OR abs)**
+    rel_pass = abs(rel_err) <= rel_threshold
+    abs_threshold = max(slew_multiplier * rel_pin_slew, ps_value * 1e-12)
+    abs_pass = abs(abs_err) <= abs_threshold
+
+    error_based_pass = rel_pass or abs_pass
+
+    # **CHECK 2: CI Bounds Pass**
+    ci_lb = min(mc_ci_lb, mc_ci_ub)
+    ci_ub = max(mc_ci_lb, mc_ci_ub)
+    ci_bounds_pass = (ci_lb <= lib_value <= ci_ub)
+
+    # **BASE PASS = Check 1 OR Check 2**
+    base_pass = error_based_pass or ci_bounds_pass
+
+    # Determine pass reason
+    if base_pass:
+        if rel_pass and abs_pass:
+            pass_reason = "both"
+        elif rel_pass:
+            pass_reason = "rel_pass"
+        elif abs_pass:
+            pass_reason = "abs_pass"
+        elif ci_bounds_pass:
+            pass_reason = "ci_bounds"
+        else:
+            pass_reason = "unknown"
+    else:
+        pass_reason = "fail"
+
+    # **WAIVER 1: CI Enlargement (6%)**
+    ci_width = abs(ci_ub - ci_lb)
+    ci_enlargement_amount = ci_width * 0.06  # 6% enlargement
+    enlarged_lb = ci_lb - ci_enlargement_amount
+    enlarged_ub = ci_ub + ci_enlargement_amount
+    waiver1_ci_enlarged = (enlarged_lb <= lib_value <= enlarged_ub)
+
+    # **WAIVER 2: Determine Error Direction**
+    error_direction = 'optimistic' if lib_value < mc_value else 'pessimistic'
+
+    # **FINAL STATUS**
+    if base_pass:
+        final_status = "Pass"
+    elif waiver1_ci_enlarged:
+        final_status = "Waived_CI"
+    else:
+        final_status = "Fail"
+
+    logging.debug(f"  Results for {param_name}: base_pass={base_pass}, waiver1={waiver1_ci_enlarged}, error_dir={error_direction}, final={final_status}")
+
+    return {
+        'base_pass': base_pass,
+        'pass_reason': pass_reason,
+        'waiver1_ci_enlarged': waiver1_ci_enlarged,
+        'error_direction': error_direction,
+        'final_status': final_status,
+        'abs_err': abs_err,
+        'rel_err': rel_err,
+        'mc_value': mc_value,
+        'lib_value': lib_value,
+        'mc_ci_lb': mc_ci_lb,
+        'mc_ci_ub': mc_ci_ub
+    }
+
 def check_sigma_pass_fail_with_tiers(row, type_name, sigma_type, vendor_prefix):
     """
     Check sigma parameter using four-tier system with detailed tier tracking

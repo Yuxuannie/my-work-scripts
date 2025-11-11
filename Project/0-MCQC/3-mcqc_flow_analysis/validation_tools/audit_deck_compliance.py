@@ -1738,6 +1738,36 @@ Examples:
             print("   [WARN]  Template caching failed: {}".format(e))
             shared_template_data = None
 
+    # CSV-ONLY MODE: Skip all arc processing and generate summary from existing reports
+    if args.csv_only:
+        print("[CSV] CSV-only mode: Generating summary from existing reports...")
+        print("[CSV] Searching for existing reports in: {}".format(args.output_dir))
+
+        # Generate CSV summary from existing data without processing arcs
+        start_time = time.time()
+        validation_results = []
+
+        # Look for existing alignment CSV to generate legacy CSV format
+        alignment_csv_file = args.output_dir / "alignment_summary.csv"
+        if alignment_csv_file.exists():
+            print("[CSV] Found existing alignment data: {}".format(alignment_csv_file))
+            # Generate legacy CSV from existing alignment data
+            csv_file = args.output_dir / "compliance_summary.csv"
+            try:
+                # Simple CSV conversion from existing data
+                with open(str(alignment_csv_file), 'r') as infile, open(str(csv_file), 'w') as outfile:
+                    outfile.write(infile.read())
+                print("[OK] CSV summary generated: {}".format(csv_file))
+            except Exception as e:
+                print("[ERROR] Failed to generate CSV summary: {}".format(e))
+                return 1
+        else:
+            print("[ERROR] No existing alignment data found. Run without --csv_only first.")
+            return 1
+
+        print("[OK] CSV-only mode completed in {:.2f}s".format(time.time() - start_time))
+        return 0
+
     # Filter arcs based on --force flag
     if not args.force and args.deck_dir:
         print("[SEARCH] Checking for existing reports (use --force to reprocess all)...")
@@ -1928,10 +1958,10 @@ Examples:
 
     # Generate legacy CSV summaries for compatibility
     csv_file = args.output_dir / "compliance_summary.csv"
-    reporter.generate_csv_summary(validation_results, csv_file)
+    reporter.generate_csv_summary(validation_results, str(csv_file))
 
     template_summary_file = args.output_dir / "template_matching_summary.csv"
-    reporter.generate_template_matching_summary_csv(validation_results, template_summary_file)
+    reporter.generate_template_matching_summary_csv(validation_results, str(template_summary_file))
 
     # Print summary
     print("\n[DATA] Validation Summary:")
