@@ -100,13 +100,19 @@ def check_pass_with_waivers_moments(row, type_name, param_name, mc_prefix='MC', 
         mc_value = row[f"{mc_prefix}_{param_name}"]
         lib_value = row[f"{lib_prefix}_{param_name}"]
 
-        # Get pre-calculated errors if available
+        # Get absolute error
         if f"{param_name}_abs_err" in row:
             abs_err = row[f"{param_name}_abs_err"]
-            rel_err = row[f"{param_name}_rel_err"]
         else:
             abs_err = lib_value - mc_value
+
+        # Use original moments method - get pre-calculated relative errors if available
+        if f"{param_name}_rel_err" in row:
+            rel_err = row[f"{param_name}_rel_err"]
+            logging.debug(f"  Using pre-calculated rel_err: {rel_err}")
+        else:
             rel_err = (lib_value - mc_value) / abs(mc_value) if mc_value != 0 else 0
+            logging.debug(f"  Calculated rel_err using MC value denominator: {rel_err}")
 
         # For moments data, we need to estimate CI bounds since they're not explicitly provided
         # Use a conservative 10% margin around the MC value as CI bounds

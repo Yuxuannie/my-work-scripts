@@ -149,10 +149,15 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
         else:
             abs_err = lib_value - mc_value  # Calculate
 
-        if f"{lib_prefix}_{param_name}_Rel" in row:
-            rel_err = row[f"{lib_prefix}_{param_name}_Rel"]  # Pre-calculated
+        # Calculate proper relative error using max denominator method (aligned with original sigma script)
+        lib_nominal = row.get(f'{lib_prefix}_Nominal', None)
+        if lib_nominal is not None:
+            max_denom = max(abs(lib_nominal), abs(mc_value))
+            rel_err = (lib_value - mc_value) / max_denom
+            logging.debug(f"  Using max_denom method: max({abs(lib_nominal):.1f}, {abs(mc_value):.1f}) = {max_denom:.1f}")
         else:
-            rel_err = (lib_value - mc_value) / abs(mc_value) if mc_value != 0 else 0  # Calculate
+            rel_err = (lib_value - mc_value) / abs(mc_value) if mc_value != 0 else 0
+            logging.debug(f"  Using fallback method (no nominal found)")
 
         logging.debug(f"  rel_pin_slew: {rel_pin_slew}")
         logging.debug(f"  {mc_prefix}_{param_name}: {mc_value}")
