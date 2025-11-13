@@ -8,6 +8,9 @@ import logging
 import datetime
 import argparse
 from pathlib import Path
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.table import Table
 
 """
 Sigma Pass Rate Calculation Script with Unified Waiver System
@@ -798,6 +801,138 @@ def generate_detailed_checking_validation(results, root_path):
 
     return validation_file
 
+def generate_pass_rate_visualization(results, root_path):
+    """
+    Generate a PNG visualization showing pass rate migration across waivers
+
+    Color coding:
+    - PR >= 95%: Light green background, grey font (Pass)
+    - 90% <= PR < 95%: Orange background, black font (Marginally Pass)
+    - PR < 90%: Dark red background, white font (Fail)
+    """
+    logging.info("Generating pass rate visualization")
+
+    def get_cell_color(pr_value):
+        """Return background and font colors based on pass rate value"""
+        if pr_value >= 95:
+            return '#90EE90', '#696969'  # Light green, grey
+        elif pr_value >= 90:
+            return '#FFA500', '#000000'  # Orange, black
+        else:
+            return '#8B0000', '#FFFFFF'  # Dark red, white
+
+    def parse_pr_value(pr_string):
+        """Parse pass rate string like '98.5%' to float"""
+        try:
+            return float(pr_string.rstrip('%'))
+        except:
+            return 0.0
+
+    # Collect data for visualization
+    viz_data = []
+
+    for (file_name, type_name), param_data in results.items():
+        corner = file_name.replace('.rpt', '').replace('fmc_', '')
+        import re
+        corner_pattern = r'(ssg[ng][pg]_[0-9]p[0-9]+v_[mn][0-9]+c)'
+        match = re.search(corner_pattern, corner)
+        if match:
+            corner = match.group(1)
+        else:
+            corner = corner.split('_')[0] if corner else 'unknown'
+
+        for param in ['Early_Sigma', 'Late_Sigma']:
+            if param in param_data:
+                stats = param_data[param]
+                viz_data.append({
+                    'Corner': corner,
+                    'Type': type_name.upper(),
+                    'Parameter': param.replace('_', ' '),
+                    'Base_PR': stats['base_pr'],
+                    'PR_Waiver1': stats['pr_with_waiver1'],
+                    'PR_Optimistic': stats['pr_optimistic_only']
+                })
+
+    if not viz_data:
+        logging.warning("No data available for visualization")
+        return None
+
+    # Create figure with sufficient size
+    fig, ax = plt.subplots(figsize=(16, len(viz_data) * 0.5 + 2))
+    ax.axis('tight')
+    ax.axis('off')
+
+    # Prepare table data
+    headers = ['Corner', 'Type', 'Parameter', 'Base PR\n(Error-based)',
+               'PR with Waiver1\n(+CI Enlargement)', 'PR Optimistic\n(Opt. Errors Only)']
+
+    table_data = []
+    for row in viz_data:
+        table_data.append([
+            row['Corner'],
+            row['Type'],
+            row['Parameter'],
+            f"{row['Base_PR']:.1f}%",
+            f"{row['PR_Waiver1']:.1f}%",
+            f"{row['PR_Optimistic']:.1f}%"
+        ])
+
+    # Create table
+    table = ax.table(cellText=table_data, colLabels=headers,
+                     cellLoc='center', loc='center',
+                     bbox=[0, 0, 1, 1])
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+
+    # Style header row
+    for i in range(len(headers)):
+        cell = table[(0, i)]
+        cell.set_facecolor('#4472C4')
+        cell.set_text_props(weight='bold', color='white')
+        cell.set_height(0.08)
+
+    # Apply color coding to data cells
+    for i, row in enumerate(viz_data, start=1):
+        # Style first 3 columns (Corner, Type, Parameter) with neutral colors
+        for j in range(3):
+            cell = table[(i, j)]
+            cell.set_facecolor('#F0F0F0')
+            cell.set_text_props(color='black')
+            cell.set_height(0.06)
+
+        # Apply color coding to pass rate columns
+        pr_values = [row['Base_PR'], row['PR_Waiver1'], row['PR_Optimistic']]
+        for j, pr_value in enumerate(pr_values, start=3):
+            cell = table[(i, j)]
+            bg_color, font_color = get_cell_color(pr_value)
+            cell.set_facecolor(bg_color)
+            cell.set_text_props(color=font_color, weight='bold')
+            cell.set_height(0.06)
+
+    # Add title
+    plt.title('Sigma Pass Rate Migration Across Waivers',
+              fontsize=16, fontweight='bold', pad=20)
+
+    # Add legend
+    legend_elements = [
+        mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR ≥ 95%)'),
+        mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% ≤ PR < 95%)'),
+        mpatches.Patch(facecolor='#8B0000', edgecolor='black', label='Fail (PR < 90%)')
+    ]
+    ax.legend(handles=legend_elements, loc='upper center',
+             bbox_to_anchor=(0.5, -0.02), ncol=3, frameon=False)
+
+    # Save figure
+    png_file = os.path.join(root_path, "sigma_pass_rate_visualization.png")
+    plt.tight_layout()
+    plt.savefig(png_file, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    logging.info(f"Pass rate visualization saved to: {png_file}")
+
+    return png_file
+
 def generate_optimistic_pessimistic_breakdown(results, root_path):
     """
     Generate optimistic vs pessimistic breakdown analysis
@@ -955,14 +1090,21 @@ def main():
         # Generate detailed checking validation (for debugging base_PR discrepancy)
         validation_file = generate_detailed_checking_validation(sigma_waiver_results, root_path)
 
+        # Generate pass rate visualization
+        viz_file = generate_pass_rate_visualization(sigma_waiver_results, root_path)
+
         logging.info(f"Sigma waiver CSV saved to: {csv_file}")
         logging.info(f"Detailed checking validation saved to: {validation_file}")
+        if viz_file:
+            logging.info(f"Pass rate visualization saved to: {viz_file}")
 
         print('\n' + "="*50)
         print("SIGMA WAIVER ANALYSIS COMPLETED")
         print("="*50)
         print(f"Results saved to: {csv_file}")
         print(f"Validation report: {validation_file}")
+        if viz_file:
+            print(f"Visualization: {viz_file}")
         print("="*50)
     else:
         logging.warning("Could not generate sigma waiver outputs - no valid results")
@@ -971,6 +1113,7 @@ def main():
     logging.info("SIGMA CHECK WITH WAIVER SYSTEM completed")
     logging.info("Generated outputs:")
     logging.info("  - sigma_PR_table_with_waivers.csv (3 separate tables)")
+    logging.info("  - sigma_pass_rate_visualization.png (color-coded visualization)")
     logging.info("  - detailed_checking_validation.txt (validation report)")
     logging.info("  - *_sigma_check_with_waivers.csv (individual corner/type results)")
     logging.info("")
@@ -978,7 +1121,10 @@ def main():
     logging.info("  - Table 1: Base_PR (Error-based only - rel OR abs, NO CI bounds)")
     logging.info("  - Table 2: PR_with_Waiver1 (Base + CI bounds with 6% enlargement)")
     logging.info("  - Table 3: PR_Optimistic_Only (Only optimistic errors - Lib < MC)")
-    logging.info("  - See detailed_checking_validation.txt for full comparison")
+    logging.info("  - Visualization shows migration with color coding:")
+    logging.info("    * Light green (grey font): Pass (PR ≥ 95%)")
+    logging.info("    * Orange (black font): Marginally Pass (90% ≤ PR < 95%)")
+    logging.info("    * Dark red (white font): Fail (PR < 90%)")
 
 if __name__ == "__main__":
     main()
