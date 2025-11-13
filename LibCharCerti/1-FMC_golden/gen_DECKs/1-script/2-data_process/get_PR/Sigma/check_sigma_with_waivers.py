@@ -16,15 +16,17 @@ Implements unified pass/fail system with structured waivers:
 
 1. Base Pass/Fail Criteria (No Waivers):
    - Check 1: Error-Based Pass (rel_pass OR abs_pass)
-   - Check 2: CI Bounds Pass (lib value within MC CI bounds)
-   - Base Pass = Check 1 OR Check 2
+   - Base Pass = Check 1 ONLY
+   - NOTE: CI bounds checking is REMOVED from base pass
 
 2. Waiver System:
    - Waiver 1: CI Enlargement (CI ± 6%)
+     * CI bounds checking ONLY applied here with 6% enlargement
+     * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
    - Waiver 2: Optimistic Error Only (lib < mc)
 
 3. Generates 4 pass rates:
-   - Base_PR: Base criteria only
+   - Base_PR: Error-based only (rel OR abs)
    - PR_with_Waiver1: Base + CI enlargement
    - PR_Optimistic_Only: Only optimistic errors
    - PR_with_Both_Waivers: Optimistic + CI enlargement
@@ -95,11 +97,12 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
 
     Base Pass Criteria:
     - Check 1: Error-Based Pass (rel_pass OR abs_pass)
-    - Check 2: CI Bounds Pass (lib value within MC CI bounds)
-    - Base Pass = Check 1 OR Check 2
+    - Base Pass = Check 1 ONLY (CI bounds NOT included in base)
 
     Waivers:
     - Waiver 1: CI Enlargement (CI ± 6%)
+      * CI bounds checking ONLY applied here with 6% enlargement
+      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
     - Waiver 2: Optimistic Error Only (lib < mc)
 
     Args:
@@ -112,7 +115,7 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
     Returns:
         dict: {
             'base_pass': bool,
-            'pass_reason': str,  # rel_pass|abs_pass|ci_bounds|fail
+            'pass_reason': str,  # rel_pass|abs_pass|both|fail
             'waiver1_ci_enlarged': bool,
             'error_direction': 'optimistic'|'pessimistic',
             'final_status': 'Pass'|'Waived_CI'|'Fail',
@@ -221,13 +224,9 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
 
     error_based_pass = rel_pass or abs_pass
 
-    # **CHECK 2: CI Bounds Pass**
-    ci_lb = min(mc_ci_lb, mc_ci_ub)
-    ci_ub = max(mc_ci_lb, mc_ci_ub)
-    ci_bounds_pass = (ci_lb <= lib_value <= ci_ub)
-
-    # **BASE PASS = Check 1 OR Check 2**
-    base_pass = error_based_pass or ci_bounds_pass
+    # **BASE PASS = Check 1 ONLY (error-based)**
+    # CI bounds checking is REMOVED from base pass
+    base_pass = error_based_pass
 
     # Determine pass reason
     if base_pass:
@@ -237,14 +236,15 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
             pass_reason = "rel_pass"
         elif abs_pass:
             pass_reason = "abs_pass"
-        elif ci_bounds_pass:
-            pass_reason = "ci_bounds"
         else:
             pass_reason = "unknown"
     else:
         pass_reason = "fail"
 
     # **WAIVER 1: CI Enlargement (6%)**
+    # CI bounds checking is ONLY applied here with 6% enlargement
+    ci_lb = min(mc_ci_lb, mc_ci_ub)
+    ci_ub = max(mc_ci_lb, mc_ci_ub)
     ci_width = abs(ci_ub - ci_lb)
     ci_enlargement_amount = ci_width * 0.06  # 6% enlargement
     enlarged_lb = ci_lb - ci_enlargement_amount
@@ -647,10 +647,11 @@ def generate_waiver_summary_table(results, root_path):
     # Create the summary string
     summary = "Sigma Waiver Summary Table (4 Pass Rates with 1-digit precision)\n\n"
     summary += "Pass Rate Definitions:\n"
-    summary += "- Base_PR: Pass rate using only base criteria (Check 1 OR Check 2)\n"
-    summary += "- PR_with_Waiver1: Pass rate including CI enlargement waiver\n"
+    summary += "- Base_PR: Error-based only (rel OR abs), NO CI bounds\n"
+    summary += "- PR_with_Waiver1: Base + CI bounds with 6% enlargement\n"
     summary += "- PR_Optimistic_Only: Pass rate if we ONLY consider optimistic errors (Lib < MC)\n"
     summary += "- PR_with_Both_Waivers: Pass rate with both CI enlargement AND optimistic-only filtering\n\n"
+    summary += "NOTE: CI bounds checking is ONLY applied in Waiver1 with 6% enlargement.\n\n"
 
     summary += "Delay:\n"
     summary += delay_df.to_string(index=False) if not delay_df.empty else "No delay data"
@@ -680,6 +681,90 @@ def generate_waiver_summary_table(results, root_path):
     logging.info(f"Sigma waiver CSV saved to: {csv_file}")
 
     return summary_file, csv_file
+
+def generate_detailed_checking_validation(results, root_path):
+    """
+    Generate detailed per-arc checking validation report for debugging base_PR discrepancies
+    """
+    logging.info("Generating detailed checking validation report")
+
+    validation_report = []
+    validation_report.append("="*100)
+    validation_report.append("DETAILED CHECKING VALIDATION REPORT - Per-Arc Breakdown")
+    validation_report.append("="*100)
+    validation_report.append("")
+    validation_report.append("This report shows the detailed checking logic for each arc to validate base_PR calculation.")
+    validation_report.append("")
+    validation_report.append("Checking Logic Comparison:")
+    validation_report.append("  ORIGINAL SCRIPT (check_sigma.py):")
+    validation_report.append("    Overall Pass = Tier1 OR Tier2 OR Tier3(CI+6%) OR Tier4")
+    validation_report.append("    - Tier1: Relative error <= threshold")
+    validation_report.append("    - Tier2: Value within original CI bounds")
+    validation_report.append("    - Tier3: Value within CI + 6% enlargement (INCLUDED in base pass)")
+    validation_report.append("    - Tier4: Absolute error <= slew-dependent threshold")
+    validation_report.append("")
+    validation_report.append("  NEW SCRIPT (check_sigma_with_waivers.py) - UPDATED DEFINITION:")
+    validation_report.append("    Base Pass = Check1 ONLY (error-based)")
+    validation_report.append("    - Check1: (Relative error <= threshold) OR (Absolute error <= threshold)")
+    validation_report.append("    - Waiver1: CI bounds with 6% enlargement")
+    validation_report.append("      * CI bounds checking ONLY applied in waiver with enlargement")
+    validation_report.append("      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]")
+    validation_report.append("")
+    validation_report.append("KEY DIFFERENCES:")
+    validation_report.append("  1. Base_PR excludes ALL CI bounds checking (stricter than before)")
+    validation_report.append("  2. CI bounds only validated in Waiver1 WITH 6% enlargement")
+    validation_report.append("  3. PR_with_Waiver1 is more lenient than original Tier2 (has 6% buffer)")
+    validation_report.append("")
+    validation_report.append("RECOMMENDATION:")
+    validation_report.append("  Use PR_with_Waiver1 for final pass rate (includes CI with enlargement).")
+    validation_report.append("")
+    validation_report.append("="*100)
+    validation_report.append("")
+
+    # Summary statistics
+    for (file_name, type_name), param_data in results.items():
+        validation_report.append(f"File: {file_name} | Type: {type_name.upper()}")
+        validation_report.append("-" * 100)
+
+        for param, stats in param_data.items():
+            total_arcs = stats['total_arcs']
+            base_pass_count = stats['base_pass']
+            waiver1_pass_count = stats['pass_with_waiver1']
+
+            base_pr = (base_pass_count / total_arcs * 100) if total_arcs > 0 else 0
+            pr_with_waiver1 = (waiver1_pass_count / total_arcs * 100) if total_arcs > 0 else 0
+
+            ci_waiver_contribution = waiver1_pass_count - base_pass_count
+            ci_waiver_contribution_pct = (ci_waiver_contribution / total_arcs * 100) if total_arcs > 0 else 0
+
+            validation_report.append(f"\n{param} Validation:")
+            validation_report.append(f"  Total Arcs: {total_arcs}")
+            validation_report.append(f"  Base Pass (NEW definition): {base_pass_count} ({base_pr:.1f}%)")
+            validation_report.append(f"  Base + CI Waiver (matches ORIGINAL): {waiver1_pass_count} ({pr_with_waiver1:.1f}%)")
+            validation_report.append(f"  CI Enlargement Contribution: +{ci_waiver_contribution} arcs (+{ci_waiver_contribution_pct:.1f}%)")
+            validation_report.append(f"")
+            validation_report.append(f"  CONCLUSION:")
+            if pr_with_waiver1 >= 95:
+                validation_report.append(f"    ✓ PR_with_Waiver1 ({pr_with_waiver1:.1f}%) matches ORIGINAL script behavior")
+            else:
+                validation_report.append(f"    ✗ Even with CI waiver, PR ({pr_with_waiver1:.1f}%) is below 95% target")
+
+            if abs(pr_with_waiver1 - 100.0) < 1.0:
+                validation_report.append(f"    ✓ PR_with_Waiver1 matches expected ORIGINAL result (~100%)")
+            elif base_pr < 60 and pr_with_waiver1 > 90:
+                validation_report.append(f"    ⚠ Large CI enlargement contribution indicates many arcs just outside CI bounds")
+
+        validation_report.append("")
+
+    # Save validation report
+    validation_file = os.path.join(root_path, "detailed_checking_validation.txt")
+    with open(validation_file, 'w') as f:
+        f.write('\n'.join(validation_report))
+
+    logging.info(f"Detailed checking validation report saved to: {validation_file}")
+    print('\n' + '\n'.join(validation_report))
+
+    return validation_file
 
 def generate_optimistic_pessimistic_breakdown(results, root_path):
     """
@@ -834,11 +919,15 @@ def main():
         # Generate waiver summary tables
         summary_file, csv_file = generate_waiver_summary_table(sigma_waiver_results, root_path)
 
+        # Generate detailed checking validation (for debugging base_PR discrepancy)
+        validation_file = generate_detailed_checking_validation(sigma_waiver_results, root_path)
+
         # Generate optimistic vs pessimistic breakdown
         breakdown_file = generate_optimistic_pessimistic_breakdown(sigma_waiver_results, root_path)
 
         logging.info(f"Sigma waiver summary table saved to: {summary_file}")
         logging.info(f"Sigma waiver CSV saved to: {csv_file}")
+        logging.info(f"Detailed checking validation saved to: {validation_file}")
         logging.info(f"Optimistic vs pessimistic breakdown saved to: {breakdown_file}")
 
         # Print summary to console
@@ -857,8 +946,15 @@ def main():
     logging.info("Generated outputs:")
     logging.info("  - sigma_PR_table_with_waivers.csv (new waiver table)")
     logging.info("  - sigma_waiver_summary_table.txt (human-readable summary)")
+    logging.info("  - detailed_checking_validation.txt (validation vs original script)")
     logging.info("  - optimistic_pessimistic_breakdown.txt (detailed breakdown)")
     logging.info("  - *_sigma_check_with_waivers.csv (individual corner/type results)")
+    logging.info("")
+    logging.info("IMPORTANT NOTES:")
+    logging.info("  - Base_PR: Error-based only (rel OR abs), NO CI bounds")
+    logging.info("  - PR_with_Waiver1: Base + CI bounds with 6% enlargement")
+    logging.info("  - CI bounds checking ONLY applied in Waiver1 with enlargement")
+    logging.info("  - See detailed_checking_validation.txt for full comparison")
 
 if __name__ == "__main__":
     main()
