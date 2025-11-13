@@ -17,15 +17,17 @@ pass/fail system with structured waivers.
 Unified Pass/Fail Criteria:
 1. Base Pass/Fail Criteria (No Waivers):
    - Check 1: Error-Based Pass (rel_pass OR abs_pass)
-   - Check 2: CI Bounds Pass (lib value within MC CI bounds)
-   - Base Pass = Check 1 OR Check 2
+   - Base Pass = Check 1 ONLY
+   - NOTE: CI bounds checking is REMOVED from base pass
 
 2. Waiver System:
    - Waiver 1: CI Enlargement (CI ± 6%)
+     * CI bounds checking ONLY applied here with 6% enlargement
+     * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
    - Waiver 2: Optimistic Error Only (lib < mc)
 
 3. Generates 4 pass rates:
-   - Base_PR: Base criteria only
+   - Base_PR: Error-based only (rel OR abs)
    - PR_with_Waiver1: Base + CI enlargement
    - PR_Optimistic_Only: Only optimistic errors
    - PR_with_Both_Waivers: Optimistic + CI enlargement
@@ -60,11 +62,12 @@ def check_pass_with_waivers_moments(row, type_name, param_name, mc_prefix='MC', 
 
     Base Pass Criteria:
     - Check 1: Error-Based Pass (rel_pass OR abs_pass)
-    - Check 2: CI Bounds Pass (lib value within estimated MC CI bounds)
-    - Base Pass = Check 1 OR Check 2
+    - Base Pass = Check 1 ONLY (CI bounds NOT included in base)
 
     Waivers:
     - Waiver 1: CI Enlargement (CI ± 6%)
+      * CI bounds checking ONLY applied here with 6% enlargement
+      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
     - Waiver 2: Optimistic Error Only (lib < mc)
 
     Args:
@@ -77,7 +80,7 @@ def check_pass_with_waivers_moments(row, type_name, param_name, mc_prefix='MC', 
     Returns:
         dict: {
             'base_pass': bool,
-            'pass_reason': str,  # rel_pass|abs_pass|ci_bounds|fail
+            'pass_reason': str,  # rel_pass|abs_pass|both|fail
             'waiver1_ci_enlarged': bool,
             'error_direction': 'optimistic'|'pessimistic',
             'final_status': 'Pass'|'Waived_CI'|'Fail',
@@ -165,13 +168,9 @@ def check_pass_with_waivers_moments(row, type_name, param_name, mc_prefix='MC', 
 
     error_based_pass = rel_pass or abs_pass
 
-    # **CHECK 2: CI Bounds Pass**
-    ci_lb = min(mc_ci_lb, mc_ci_ub)
-    ci_ub = max(mc_ci_lb, mc_ci_ub)
-    ci_bounds_pass = (ci_lb <= lib_value <= ci_ub)
-
-    # **BASE PASS = Check 1 OR Check 2**
-    base_pass = error_based_pass or ci_bounds_pass
+    # **BASE PASS = Check 1 ONLY (error-based)**
+    # CI bounds checking is REMOVED from base pass
+    base_pass = error_based_pass
 
     # Determine pass reason
     if base_pass:
@@ -181,14 +180,15 @@ def check_pass_with_waivers_moments(row, type_name, param_name, mc_prefix='MC', 
             pass_reason = "rel_pass"
         elif abs_pass:
             pass_reason = "abs_pass"
-        elif ci_bounds_pass:
-            pass_reason = "ci_bounds"
         else:
             pass_reason = "unknown"
     else:
         pass_reason = "fail"
 
     # **WAIVER 1: CI Enlargement (6%)**
+    # CI bounds checking is ONLY applied here with 6% enlargement
+    ci_lb = min(mc_ci_lb, mc_ci_ub)
+    ci_ub = max(mc_ci_lb, mc_ci_ub)
     ci_width = abs(ci_ub - ci_lb)
     ci_enlargement_amount = ci_width * 0.06  # 6% enlargement
     enlarged_lb = ci_lb - ci_enlargement_amount

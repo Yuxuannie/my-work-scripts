@@ -16,15 +16,17 @@ Implements unified pass/fail system with structured waivers:
 
 1. Base Pass/Fail Criteria (No Waivers):
    - Check 1: Error-Based Pass (rel_pass OR abs_pass)
-   - Check 2: CI Bounds Pass (lib value within MC CI bounds)
-   - Base Pass = Check 1 OR Check 2
+   - Base Pass = Check 1 ONLY
+   - NOTE: CI bounds checking is REMOVED from base pass
 
 2. Waiver System:
    - Waiver 1: CI Enlargement (CI ± 6%)
+     * CI bounds checking ONLY applied here with 6% enlargement
+     * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
    - Waiver 2: Optimistic Error Only (lib < mc)
 
 3. Generates 4 pass rates:
-   - Base_PR: Base criteria only
+   - Base_PR: Error-based only (rel OR abs)
    - PR_with_Waiver1: Base + CI enlargement
    - PR_Optimistic_Only: Only optimistic errors
    - PR_with_Both_Waivers: Optimistic + CI enlargement
@@ -95,11 +97,12 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
 
     Base Pass Criteria:
     - Check 1: Error-Based Pass (rel_pass OR abs_pass)
-    - Check 2: CI Bounds Pass (lib value within MC CI bounds)
-    - Base Pass = Check 1 OR Check 2
+    - Base Pass = Check 1 ONLY (CI bounds NOT included in base)
 
     Waivers:
     - Waiver 1: CI Enlargement (CI ± 6%)
+      * CI bounds checking ONLY applied here with 6% enlargement
+      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
     - Waiver 2: Optimistic Error Only (lib < mc)
 
     Args:
@@ -112,7 +115,7 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
     Returns:
         dict: {
             'base_pass': bool,
-            'pass_reason': str,  # rel_pass|abs_pass|ci_bounds|fail
+            'pass_reason': str,  # rel_pass|abs_pass|both|fail
             'waiver1_ci_enlarged': bool,
             'error_direction': 'optimistic'|'pessimistic',
             'final_status': 'Pass'|'Waived_CI'|'Fail',
@@ -216,13 +219,9 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
 
     error_based_pass = rel_pass or abs_pass
 
-    # **CHECK 2: CI Bounds Pass**
-    ci_lb = min(mc_ci_lb, mc_ci_ub)
-    ci_ub = max(mc_ci_lb, mc_ci_ub)
-    ci_bounds_pass = (ci_lb <= lib_value <= ci_ub)
-
-    # **BASE PASS = Check 1 OR Check 2**
-    base_pass = error_based_pass or ci_bounds_pass
+    # **BASE PASS = Check 1 ONLY (error-based)**
+    # CI bounds checking is REMOVED from base pass
+    base_pass = error_based_pass
 
     # Determine pass reason
     if base_pass:
@@ -232,14 +231,15 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
             pass_reason = "rel_pass"
         elif abs_pass:
             pass_reason = "abs_pass"
-        elif ci_bounds_pass:
-            pass_reason = "ci_bounds"
         else:
             pass_reason = "unknown"
     else:
         pass_reason = "fail"
 
     # **WAIVER 1: CI Enlargement (6%)**
+    # CI bounds checking is ONLY applied here with 6% enlargement
+    ci_lb = min(mc_ci_lb, mc_ci_ub)
+    ci_ub = max(mc_ci_lb, mc_ci_ub)
     ci_width = abs(ci_ub - ci_lb)
     ci_enlargement_amount = ci_width * 0.06  # 6% enlargement
     enlarged_lb = ci_lb - ci_enlargement_amount
@@ -639,10 +639,11 @@ def generate_waiver_summary_table(results, root_path):
     # Create the summary string
     summary = "Sigma Waiver Summary Table (4 Pass Rates with 1-digit precision)\n\n"
     summary += "Pass Rate Definitions:\n"
-    summary += "- Base_PR: Pass rate using only base criteria (Check 1 OR Check 2)\n"
-    summary += "- PR_with_Waiver1: Pass rate including CI enlargement waiver\n"
+    summary += "- Base_PR: Error-based only (rel OR abs), NO CI bounds\n"
+    summary += "- PR_with_Waiver1: Base + CI bounds with 6% enlargement\n"
     summary += "- PR_Optimistic_Only: Pass rate if we ONLY consider optimistic errors (Lib < MC)\n"
     summary += "- PR_with_Both_Waivers: Pass rate with both CI enlargement AND optimistic-only filtering\n\n"
+    summary += "NOTE: CI bounds checking is ONLY applied in Waiver1 with 6% enlargement.\n\n"
 
     summary += "Delay:\n"
     summary += delay_df.to_string(index=False) if not delay_df.empty else "No delay data"
@@ -694,17 +695,20 @@ def generate_detailed_checking_validation(results, root_path):
     validation_report.append("    - Tier3: Value within CI + 6% enlargement (INCLUDED in base pass)")
     validation_report.append("    - Tier4: Absolute error <= slew-dependent threshold")
     validation_report.append("")
-    validation_report.append("  NEW SCRIPT (check_sigma_with_waivers.py) - CURRENT DEFINITION:")
-    validation_report.append("    Base Pass = Check1 OR Check2 (CI enlargement NOT included)")
+    validation_report.append("  NEW SCRIPT (check_sigma_with_waivers.py) - UPDATED DEFINITION:")
+    validation_report.append("    Base Pass = Check1 ONLY (error-based)")
     validation_report.append("    - Check1: (Relative error <= threshold) OR (Absolute error <= threshold)")
-    validation_report.append("    - Check2: Value within original CI bounds")
-    validation_report.append("    - Waiver1: CI + 6% enlargement (EXCLUDED from base pass)")
+    validation_report.append("    - Waiver1: CI bounds with 6% enlargement")
+    validation_report.append("      * CI bounds checking ONLY applied in waiver with enlargement")
+    validation_report.append("      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]")
     validation_report.append("")
-    validation_report.append("KEY DIFFERENCE:")
-    validation_report.append("  The NEW script treats CI enlargement as a WAIVER, while ORIGINAL treats it as base pass.")
-    validation_report.append("  This explains why base_PR is lower in the new script.")
+    validation_report.append("KEY DIFFERENCES:")
+    validation_report.append("  1. Base_PR excludes ALL CI bounds checking (stricter than before)")
+    validation_report.append("  2. CI bounds only validated in Waiver1 WITH 6% enlargement")
+    validation_report.append("  3. PR_with_Waiver1 is more lenient than original Tier2 (has 6% buffer)")
     validation_report.append("")
-    validation_report.append("To match ORIGINAL behavior, base_PR should include CI enlargement (use PR_with_Waiver1).")
+    validation_report.append("RECOMMENDATION:")
+    validation_report.append("  Use PR_with_Waiver1 for final pass rate (includes CI with enlargement).")
     validation_report.append("")
     validation_report.append("="*100)
     validation_report.append("")
@@ -940,8 +944,9 @@ def main():
     logging.info("  - *_sigma_check_with_waivers.csv (individual corner/type results)")
     logging.info("")
     logging.info("IMPORTANT NOTES:")
-    logging.info("  - Base_PR excludes CI enlargement (more restrictive)")
-    logging.info("  - PR_with_Waiver1 includes CI enlargement (matches original script)")
+    logging.info("  - Base_PR: Error-based only (rel OR abs), NO CI bounds")
+    logging.info("  - PR_with_Waiver1: Base + CI bounds with 6% enlargement")
+    logging.info("  - CI bounds checking ONLY applied in Waiver1 with enlargement")
     logging.info("  - See detailed_checking_validation.txt for full comparison")
 
 if __name__ == "__main__":
