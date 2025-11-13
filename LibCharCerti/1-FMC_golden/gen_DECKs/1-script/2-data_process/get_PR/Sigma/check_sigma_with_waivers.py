@@ -398,6 +398,7 @@ def process_sigma_file_with_waivers(file_path, type_name):
                 'pass_with_waiver1': 0,
                 'optimistic_pass': 0,
                 'optimistic_total': 0,
+                'pessimistic_pass': 0,
                 'pass_with_both_waivers': 0,
                 'total_arcs': 0,
                 'optimistic_errors': 0,
@@ -457,6 +458,8 @@ def process_sigma_file_with_waivers(file_path, type_name):
                         waiver_stats['pass_with_both_waivers'] += 1
                 else:  # pessimistic
                     waiver_stats['pessimistic_errors'] += 1
+                    if base_pass or waiver1_ci_enlarged:
+                        waiver_stats['pessimistic_pass'] += 1
 
                 logging.debug(f"  Results for {arc_name}, {param}: base_pass={base_pass}, waiver1={waiver1_ci_enlarged}, error_dir={error_direction}, final={final_status}")
 
@@ -488,7 +491,11 @@ def process_sigma_file_with_waivers(file_path, type_name):
                     'pr_with_both_waivers': pr_with_both_waivers,
                     'total_arcs': total_count,
                     'optimistic_errors': waiver_stats['optimistic_errors'],
-                    'pessimistic_errors': waiver_stats['pessimistic_errors']
+                    'pessimistic_errors': waiver_stats['pessimistic_errors'],
+                    'optimistic_pass': waiver_stats['optimistic_pass'],
+                    'pessimistic_pass': waiver_stats['pessimistic_pass'],
+                    'pass_with_waiver1_count': waiver_stats['pass_with_waiver1'],
+                    'base_pass_count': waiver_stats['base_pass']
                 }
 
                 # Log detailed waiver statistics (1 digit precision)
@@ -707,8 +714,7 @@ def generate_optimistic_pessimistic_breakdown(results, root_path):
             pessimistic_errors = stats['pessimistic_errors']
 
             optimistic_pass = stats['optimistic_pass']
-            # Calculate pessimistic pass rate
-            pessimistic_pass = (stats['pass_with_waiver1'] - optimistic_pass) if (stats['pass_with_waiver1'] - optimistic_pass) >= 0 else 0
+            pessimistic_pass = stats['pessimistic_pass']
 
             optimistic_pass_rate = (optimistic_pass / optimistic_errors * 100) if optimistic_errors > 0 else 0
             pessimistic_pass_rate = (pessimistic_pass / pessimistic_errors * 100) if pessimistic_errors > 0 else 0
