@@ -727,9 +727,11 @@ def generate_detailed_checking_validation(results, root_path):
         validation_report.append("-" * 100)
 
         for param, stats in param_data.items():
-            total_arcs = stats['total_arcs']
-            base_pass_count = stats['base_pass']
-            waiver1_pass_count = stats['pass_with_waiver1']
+            total_arcs = stats.get('total_arcs', 0)
+
+            # Use updated key names: base_pass_count and pass_with_waiver1_count
+            base_pass_count = stats.get('base_pass_count', stats.get('base_pass', 0))
+            waiver1_pass_count = stats.get('pass_with_waiver1_count', stats.get('pass_with_waiver1', 0))
 
             base_pr = (base_pass_count / total_arcs * 100) if total_arcs > 0 else 0
             pr_with_waiver1 = (waiver1_pass_count / total_arcs * 100) if total_arcs > 0 else 0
@@ -740,17 +742,17 @@ def generate_detailed_checking_validation(results, root_path):
             validation_report.append(f"\n{param} Validation:")
             validation_report.append(f"  Total Arcs: {total_arcs}")
             validation_report.append(f"  Base Pass (NEW definition): {base_pass_count} ({base_pr:.1f}%)")
-            validation_report.append(f"  Base + CI Waiver (matches ORIGINAL): {waiver1_pass_count} ({pr_with_waiver1:.1f}%)")
+            validation_report.append(f"  Base + CI Waiver: {waiver1_pass_count} ({pr_with_waiver1:.1f}%)")
             validation_report.append(f"  CI Enlargement Contribution: +{ci_waiver_contribution} arcs (+{ci_waiver_contribution_pct:.1f}%)")
             validation_report.append(f"")
             validation_report.append(f"  CONCLUSION:")
             if pr_with_waiver1 >= 95:
-                validation_report.append(f"    ✓ PR_with_Waiver1 ({pr_with_waiver1:.1f}%) matches ORIGINAL script behavior")
+                validation_report.append(f"    ✓ PR_with_Waiver1 ({pr_with_waiver1:.1f}%) is at or above 95% target")
             else:
                 validation_report.append(f"    ✗ Even with CI waiver, PR ({pr_with_waiver1:.1f}%) is below 95% target")
 
             if abs(pr_with_waiver1 - 100.0) < 1.0:
-                validation_report.append(f"    ✓ PR_with_Waiver1 matches expected ORIGINAL result (~100%)")
+                validation_report.append(f"    ✓ PR_with_Waiver1 is near perfect (~100%)")
             elif base_pr < 60 and pr_with_waiver1 > 90:
                 validation_report.append(f"    ⚠ Large CI enlargement contribution indicates many arcs just outside CI bounds")
 
@@ -799,16 +801,17 @@ def generate_optimistic_pessimistic_breakdown(results, root_path):
         breakdown_report.append("-" * 60)
 
         for param, stats in param_data.items():
-            total_arcs = stats['total_arcs']
-            optimistic_errors = stats['optimistic_errors']
-            pessimistic_errors = stats['pessimistic_errors']
+            # Get statistics with defaults for backwards compatibility
+            total_arcs = stats.get('total_arcs', 0)
+            optimistic_errors = stats.get('optimistic_errors', 0)
+            pessimistic_errors = stats.get('pessimistic_errors', 0)
 
-            optimistic_pass = stats['optimistic_pass']
-            pessimistic_pass = stats['pessimistic_pass']
+            optimistic_pass = stats.get('optimistic_pass', 0)
+            pessimistic_pass = stats.get('pessimistic_pass', 0)
 
             optimistic_pass_rate = (optimistic_pass / optimistic_errors * 100) if optimistic_errors > 0 else 0
             pessimistic_pass_rate = (pessimistic_pass / pessimistic_errors * 100) if pessimistic_errors > 0 else 0
-            overall_pass_rate = stats['pr_with_waiver1']
+            overall_pass_rate = stats.get('pr_with_waiver1', 0)
 
             breakdown_report.append(f"\n{param} Analysis:")
             breakdown_report.append(f"  Total Arcs: {total_arcs}")
