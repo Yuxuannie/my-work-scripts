@@ -44,21 +44,10 @@ def parse_arguments():
     return parser.parse_args()
 
 def setup_logging(input_file):
-    """Set up logging configuration"""
-    input_name = os.path.basename(input_file)
-    log_file = os.path.join(os.path.dirname(input_file), f"{input_name}.log")
-
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
-    )
-
-    logging.info(f"Log file created at: {log_file}")
-    return log_file
+    """Set up logging configuration - logs to main log file only"""
+    # No longer create individual log files per input file
+    # All logging goes to the main log file configured in main()
+    return None
 
 def detect_vendor_columns(df):
     """Auto-detect whether this is CDNS or SNPS data based on column names"""
@@ -539,30 +528,31 @@ def process_sigma_file_with_waivers(file_path, type_name):
 
 def generate_waiver_summary_table(results, root_path):
     """
-    Generate summary table with 4 pass rate columns as per requirement
+    Generate summary CSV with 3 separate tables:
+    1. Base_PR only
+    2. PR_with_Waiver1 (Base + CI enlargement)
+    3. PR_Optimistic_Only (Optimistic errors only)
 
     Returns:
-        str: Path to the summary file
+        str: Path to the CSV file
     """
-    logging.info("Generating sigma waiver summary table with 4 pass rates")
+    logging.info("Generating sigma waiver summary CSV with 3 separate tables")
 
-    # Create dataframes for each type
-    delay_df = pd.DataFrame(columns=[
-        'Corner',
-        'Early_Sigma_Base_PR', 'Early_Sigma_PR_with_Waiver1', 'Early_Sigma_PR_Optimistic_Only', 'Early_Sigma_PR_with_Both_Waivers',
-        'Late_Sigma_Base_PR', 'Late_Sigma_PR_with_Waiver1', 'Late_Sigma_PR_Optimistic_Only', 'Late_Sigma_PR_with_Both_Waivers'
-    ])
+    # Create dataframes for each pass rate type
+    # Table 1: Base_PR
+    base_delay_df = pd.DataFrame(columns=['Corner', 'Early_Sigma_Base_PR', 'Late_Sigma_Base_PR'])
+    base_slew_df = pd.DataFrame(columns=['Corner', 'Early_Sigma_Base_PR', 'Late_Sigma_Base_PR'])
+    base_hold_df = pd.DataFrame(columns=['Corner', 'Late_Sigma_Base_PR'])
 
-    slew_df = pd.DataFrame(columns=[
-        'Corner',
-        'Early_Sigma_Base_PR', 'Early_Sigma_PR_with_Waiver1', 'Early_Sigma_PR_Optimistic_Only', 'Early_Sigma_PR_with_Both_Waivers',
-        'Late_Sigma_Base_PR', 'Late_Sigma_PR_with_Waiver1', 'Late_Sigma_PR_Optimistic_Only', 'Late_Sigma_PR_with_Both_Waivers'
-    ])
+    # Table 2: PR_with_Waiver1
+    waiver1_delay_df = pd.DataFrame(columns=['Corner', 'Early_Sigma_PR_with_Waiver1', 'Late_Sigma_PR_with_Waiver1'])
+    waiver1_slew_df = pd.DataFrame(columns=['Corner', 'Early_Sigma_PR_with_Waiver1', 'Late_Sigma_PR_with_Waiver1'])
+    waiver1_hold_df = pd.DataFrame(columns=['Corner', 'Late_Sigma_PR_with_Waiver1'])
 
-    hold_df = pd.DataFrame(columns=[
-        'Corner',
-        'Late_Sigma_Base_PR', 'Late_Sigma_PR_with_Waiver1', 'Late_Sigma_PR_Optimistic_Only', 'Late_Sigma_PR_with_Both_Waivers'
-    ])
+    # Table 3: PR_Optimistic_Only
+    opt_delay_df = pd.DataFrame(columns=['Corner', 'Early_Sigma_PR_Optimistic_Only', 'Late_Sigma_PR_Optimistic_Only'])
+    opt_slew_df = pd.DataFrame(columns=['Corner', 'Early_Sigma_PR_Optimistic_Only', 'Late_Sigma_PR_Optimistic_Only'])
+    opt_hold_df = pd.DataFrame(columns=['Corner', 'Late_Sigma_PR_Optimistic_Only'])
 
     # Extract corner name from file name (similar to existing function)
     def extract_corner_from_filename(file_name):
@@ -609,78 +599,118 @@ def generate_waiver_summary_table(results, root_path):
             if file_key and file_key in results:
                 rates = results[file_key]
 
-                new_row = {'Corner': corner}
+                # Create separate rows for each table
+                base_row = {'Corner': corner}
+                waiver1_row = {'Corner': corner}
+                opt_row = {'Corner': corner}
 
                 if type_name in ['delay', 'slew']:
                     for param in ['Early_Sigma', 'Late_Sigma']:
                         if param in rates:
-                            new_row[f'{param}_Base_PR'] = f"{rates[param]['base_pr']:.1f}%"
-                            new_row[f'{param}_PR_with_Waiver1'] = f"{rates[param]['pr_with_waiver1']:.1f}%"
-                            new_row[f'{param}_PR_Optimistic_Only'] = f"{rates[param]['pr_optimistic_only']:.1f}%"
-                            new_row[f'{param}_PR_with_Both_Waivers'] = f"{rates[param]['pr_with_both_waivers']:.1f}%"
+                            base_row[f'{param}_Base_PR'] = f"{rates[param]['base_pr']:.1f}%"
+                            waiver1_row[f'{param}_PR_with_Waiver1'] = f"{rates[param]['pr_with_waiver1']:.1f}%"
+                            opt_row[f'{param}_PR_Optimistic_Only'] = f"{rates[param]['pr_optimistic_only']:.1f}%"
                         else:
-                            new_row[f'{param}_Base_PR'] = "N/A"
-                            new_row[f'{param}_PR_with_Waiver1'] = "N/A"
-                            new_row[f'{param}_PR_Optimistic_Only'] = "N/A"
-                            new_row[f'{param}_PR_with_Both_Waivers'] = "N/A"
+                            base_row[f'{param}_Base_PR'] = "N/A"
+                            waiver1_row[f'{param}_PR_with_Waiver1'] = "N/A"
+                            opt_row[f'{param}_PR_Optimistic_Only'] = "N/A"
                 else:  # hold
                     param = 'Late_Sigma'
                     if param in rates:
-                        new_row[f'{param}_Base_PR'] = f"{rates[param]['base_pr']:.1f}%"
-                        new_row[f'{param}_PR_with_Waiver1'] = f"{rates[param]['pr_with_waiver1']:.1f}%"
-                        new_row[f'{param}_PR_Optimistic_Only'] = f"{rates[param]['pr_optimistic_only']:.1f}%"
-                        new_row[f'{param}_PR_with_Both_Waivers'] = f"{rates[param]['pr_with_both_waivers']:.1f}%"
+                        base_row[f'{param}_Base_PR'] = f"{rates[param]['base_pr']:.1f}%"
+                        waiver1_row[f'{param}_PR_with_Waiver1'] = f"{rates[param]['pr_with_waiver1']:.1f}%"
+                        opt_row[f'{param}_PR_Optimistic_Only'] = f"{rates[param]['pr_optimistic_only']:.1f}%"
                     else:
-                        new_row[f'{param}_Base_PR'] = "N/A"
-                        new_row[f'{param}_PR_with_Waiver1'] = "N/A"
-                        new_row[f'{param}_PR_Optimistic_Only'] = "N/A"
-                        new_row[f'{param}_PR_with_Both_Waivers'] = "N/A"
+                        base_row[f'{param}_Base_PR'] = "N/A"
+                        waiver1_row[f'{param}_PR_with_Waiver1'] = "N/A"
+                        opt_row[f'{param}_PR_Optimistic_Only'] = "N/A"
 
-                # Add to the appropriate dataframe
+                # Add to the appropriate dataframes
                 if type_name == 'delay':
-                    delay_df = pd.concat([delay_df, pd.DataFrame([new_row])], ignore_index=True)
+                    base_delay_df = pd.concat([base_delay_df, pd.DataFrame([base_row])], ignore_index=True)
+                    waiver1_delay_df = pd.concat([waiver1_delay_df, pd.DataFrame([waiver1_row])], ignore_index=True)
+                    opt_delay_df = pd.concat([opt_delay_df, pd.DataFrame([opt_row])], ignore_index=True)
                 elif type_name == 'slew':
-                    slew_df = pd.concat([slew_df, pd.DataFrame([new_row])], ignore_index=True)
+                    base_slew_df = pd.concat([base_slew_df, pd.DataFrame([base_row])], ignore_index=True)
+                    waiver1_slew_df = pd.concat([waiver1_slew_df, pd.DataFrame([waiver1_row])], ignore_index=True)
+                    opt_slew_df = pd.concat([opt_slew_df, pd.DataFrame([opt_row])], ignore_index=True)
                 else:  # hold
-                    hold_df = pd.concat([hold_df, pd.DataFrame([new_row])], ignore_index=True)
+                    base_hold_df = pd.concat([base_hold_df, pd.DataFrame([base_row])], ignore_index=True)
+                    waiver1_hold_df = pd.concat([waiver1_hold_df, pd.DataFrame([waiver1_row])], ignore_index=True)
+                    opt_hold_df = pd.concat([opt_hold_df, pd.DataFrame([opt_row])], ignore_index=True)
 
-    # Create the summary string
-    summary = "Sigma Waiver Summary Table (4 Pass Rates with 1-digit precision)\n\n"
-    summary += "Pass Rate Definitions:\n"
-    summary += "- Base_PR: Error-based only (rel OR abs), NO CI bounds\n"
-    summary += "- PR_with_Waiver1: Base + CI bounds with 6% enlargement\n"
-    summary += "- PR_Optimistic_Only: Pass rate if we ONLY consider optimistic errors (Lib < MC)\n"
-    summary += "- PR_with_Both_Waivers: Pass rate with both CI enlargement AND optimistic-only filtering\n\n"
-    summary += "NOTE: CI bounds checking is ONLY applied in Waiver1 with 6% enlargement.\n\n"
-
-    summary += "Delay:\n"
-    summary += delay_df.to_string(index=False) if not delay_df.empty else "No delay data"
-    summary += "\n\nSlew:\n"
-    summary += slew_df.to_string(index=False) if not slew_df.empty else "No slew data"
-    summary += "\n\nHold:\n"
-    summary += hold_df.to_string(index=False) if not hold_df.empty else "No hold data"
-
-    # Save to file
-    summary_file = os.path.join(root_path, "sigma_waiver_summary_table.txt")
-    with open(summary_file, 'w') as f:
-        f.write(summary)
-
-    logging.info(f"Sigma waiver summary table saved to: {summary_file}")
-
-    # Also create a CSV version for easier processing
+    # Generate consolidated CSV with 3 separate tables
     csv_file = os.path.join(root_path, "sigma_PR_table_with_waivers.csv")
 
-    # Combine dataframes with a Type column
-    delay_df['Type'] = 'delay'
-    slew_df['Type'] = 'slew'
-    hold_df['Type'] = 'hold'
-    combined_df = pd.concat([delay_df, slew_df, hold_df], ignore_index=True)
+    with open(csv_file, 'w') as f:
+        # Table 1: Base_PR
+        f.write("TABLE 1: Base_PR (Error-based only - rel OR abs NO CI bounds)\n")
+        f.write("\n")
+        f.write("DELAY\n")
+        if not base_delay_df.empty:
+            base_delay_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No delay data\n")
+        f.write("\n")
+        f.write("SLEW\n")
+        if not base_slew_df.empty:
+            base_slew_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No slew data\n")
+        f.write("\n")
+        f.write("HOLD\n")
+        if not base_hold_df.empty:
+            base_hold_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No hold data\n")
+        f.write("\n\n")
 
-    # Save to CSV
-    combined_df.to_csv(csv_file, index=False)
-    logging.info(f"Sigma waiver CSV saved to: {csv_file}")
+        # Table 2: PR_with_Waiver1
+        f.write("TABLE 2: PR_with_Waiver1 (Base + CI bounds with 6% enlargement)\n")
+        f.write("\n")
+        f.write("DELAY\n")
+        if not waiver1_delay_df.empty:
+            waiver1_delay_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No delay data\n")
+        f.write("\n")
+        f.write("SLEW\n")
+        if not waiver1_slew_df.empty:
+            waiver1_slew_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No slew data\n")
+        f.write("\n")
+        f.write("HOLD\n")
+        if not waiver1_hold_df.empty:
+            waiver1_hold_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No hold data\n")
+        f.write("\n\n")
 
-    return summary_file, csv_file
+        # Table 3: PR_Optimistic_Only
+        f.write("TABLE 3: PR_Optimistic_Only (Only optimistic errors - Lib < MC)\n")
+        f.write("\n")
+        f.write("DELAY\n")
+        if not opt_delay_df.empty:
+            opt_delay_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No delay data\n")
+        f.write("\n")
+        f.write("SLEW\n")
+        if not opt_slew_df.empty:
+            opt_slew_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No slew data\n")
+        f.write("\n")
+        f.write("HOLD\n")
+        if not opt_hold_df.empty:
+            opt_hold_df.to_csv(f, index=False, line_terminator='\n')
+        else:
+            f.write("No hold data\n")
+
+    logging.info(f"Sigma waiver CSV with 3 separate tables saved to: {csv_file}")
+
+    return csv_file
 
 def generate_detailed_checking_validation(results, root_path):
     """
@@ -919,44 +949,35 @@ def main():
     if sigma_waiver_results:
         logging.info("Generating sigma waiver outputs")
 
-        # Generate waiver summary tables
-        summary_file, csv_file = generate_waiver_summary_table(sigma_waiver_results, root_path)
+        # Generate waiver summary CSV with 3 separate tables
+        csv_file = generate_waiver_summary_table(sigma_waiver_results, root_path)
 
         # Generate detailed checking validation (for debugging base_PR discrepancy)
         validation_file = generate_detailed_checking_validation(sigma_waiver_results, root_path)
 
-        # Generate optimistic vs pessimistic breakdown
-        breakdown_file = generate_optimistic_pessimistic_breakdown(sigma_waiver_results, root_path)
-
-        logging.info(f"Sigma waiver summary table saved to: {summary_file}")
         logging.info(f"Sigma waiver CSV saved to: {csv_file}")
         logging.info(f"Detailed checking validation saved to: {validation_file}")
-        logging.info(f"Optimistic vs pessimistic breakdown saved to: {breakdown_file}")
 
-        # Print summary to console
-        with open(summary_file, 'r') as f:
-            summary_content = f.read()
         print('\n' + "="*50)
-        print("SIGMA WAIVER SUMMARY TABLE (4 Pass Rates):")
-        print(f"="*50)
-        print(summary_content)
+        print("SIGMA WAIVER ANALYSIS COMPLETED")
+        print("="*50)
+        print(f"Results saved to: {csv_file}")
+        print(f"Validation report: {validation_file}")
         print("="*50)
     else:
-        logging.warning("Could not generate sigma waiver summary table - no valid results")
+        logging.warning("Could not generate sigma waiver outputs - no valid results")
 
     logging.info("="*80)
     logging.info("SIGMA CHECK WITH WAIVER SYSTEM completed")
     logging.info("Generated outputs:")
-    logging.info("  - sigma_PR_table_with_waivers.csv (new waiver table)")
-    logging.info("  - sigma_waiver_summary_table.txt (human-readable summary)")
-    logging.info("  - detailed_checking_validation.txt (validation vs original script)")
-    logging.info("  - optimistic_pessimistic_breakdown.txt (detailed breakdown)")
+    logging.info("  - sigma_PR_table_with_waivers.csv (3 separate tables)")
+    logging.info("  - detailed_checking_validation.txt (validation report)")
     logging.info("  - *_sigma_check_with_waivers.csv (individual corner/type results)")
     logging.info("")
     logging.info("IMPORTANT NOTES:")
-    logging.info("  - Base_PR: Error-based only (rel OR abs), NO CI bounds")
-    logging.info("  - PR_with_Waiver1: Base + CI bounds with 6% enlargement")
-    logging.info("  - CI bounds checking ONLY applied in Waiver1 with enlargement")
+    logging.info("  - Table 1: Base_PR (Error-based only - rel OR abs, NO CI bounds)")
+    logging.info("  - Table 2: PR_with_Waiver1 (Base + CI bounds with 6% enlargement)")
+    logging.info("  - Table 3: PR_Optimistic_Only (Only optimistic errors - Lib < MC)")
     logging.info("  - See detailed_checking_validation.txt for full comparison")
 
 if __name__ == "__main__":
