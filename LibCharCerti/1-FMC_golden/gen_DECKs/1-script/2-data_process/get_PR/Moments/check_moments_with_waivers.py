@@ -771,6 +771,202 @@ def generate_moments_waiver_summary_table(results, root_path):
 
     return summary_file, csv_file
 
+def generate_combined_pass_rate_visualization(moments_results, sigma_results, root_path):
+    """
+    Generate a combined pivot-style heatmap PNG visualization with sigma + moments:
+    - Parameters (Early_Sigma, Late_Sigma, Meanshift, Std, Skew) as column headers
+    - Corners as row headers
+    - 3 sections: Base_PR, PR_with_Waiver1, PR_Optimistic_After_Waiver1
+    - All in ONE PNG file
+
+    Color coding:
+    - PR >= 95%: Light green background, grey font (Pass)
+    - 90% <= PR < 95%: Orange background, black font (Marginally Pass)
+    - PR < 90%: Dark red background, white font (Fail)
+    """
+    logging.info("Generating combined sigma+moments pivot heatmap visualization")
+
+    def get_cell_color(pr_value):
+        """Return background and font colors based on pass rate value"""
+        if pr_value >= 95:
+            return '#90EE90', '#696969'  # Light green, grey
+        elif pr_value >= 90:
+            return '#FFA500', '#000000'  # Orange, black
+        else:
+            return '#8B0000', '#FFFFFF'  # Dark red, white
+
+    def extract_corner_from_filename(file_name):
+        """Extract corner name from filename"""
+        import re
+        corner_pattern = r'(ssg[ng][pg]_[0-9]p[0-9]+v_[mn][0-9]+c)'
+        match = re.search(corner_pattern, file_name)
+        if match:
+            return match.group(1)
+        # Fallback
+        base_name = file_name.replace('.rpt', '').replace('MC_', '').replace('fmc_', '')
+        return base_name.split('_')[0] if base_name else 'unknown'
+
+    # Organize data by type and corner
+    data_by_type = {'delay': {}, 'slew': {}}
+
+    # Add moments data
+    for (file_name, type_name), param_data in moments_results.items():
+        corner = extract_corner_from_filename(file_name)
+
+        if corner not in data_by_type[type_name]:
+            data_by_type[type_name][corner] = {}
+
+        for param in ['Meanshift', 'Std', 'Skew']:
+            if param in param_data:
+                stats = param_data[param]
+                data_by_type[type_name][corner][param] = {
+                    'base_pr': stats['base_pr'],
+                    'pr_waiver1': stats['pr_with_waiver1'],
+                    'pr_opt_after_w1': stats['pr_optimistic_after_waiver1']
+                }
+
+    # Add sigma data from the parsed sigma table
+    for key, pr_value in sigma_results.items():
+        if len(key) == 4:  # (corner, type, metric, param)
+            corner, type_name, metric, param = key
+
+            if type_name not in data_by_type:
+                continue
+
+            if corner not in data_by_type[type_name]:
+                data_by_type[type_name][corner] = {}
+
+            if param not in data_by_type[type_name][corner]:
+                data_by_type[type_name][corner][param] = {}
+
+            # Map metric names
+            metric_map = {
+                'base_pr': 'base_pr',
+                'pr_with_waiver1': 'pr_waiver1',
+                'pr_opt_after_w1': 'pr_opt_after_w1'
+            }
+
+            if metric in metric_map:
+                data_by_type[type_name][corner][param][metric_map[metric]] = pr_value
+
+    if not any(data_by_type.values()):
+        logging.warning("No data available for combined visualization")
+        return None
+
+    # Create figure with subplots for each type
+    num_types = sum(1 for v in data_by_type.values() if v)
+    fig = plt.figure(figsize=(18, 4 * num_types + 2))
+
+    subplot_idx = 1
+
+    for type_name in ['delay', 'slew']:
+        if not data_by_type[type_name]:
+            continue
+
+        type_data = data_by_type[type_name]
+        corners = sorted(type_data.keys())
+
+        # Combined parameters: sigma first, then moments
+        params = ['Early_Sigma', 'Late_Sigma', 'Meanshift', 'Std', 'Skew']
+
+        # Create 3 subtables for this type (Base, Waiver1, Opt_After_W1)
+        for metric_idx, (metric_name, metric_key) in enumerate([
+            ('Base PR (Error-based)', 'base_pr'),
+            ('PR with Waiver1 (+CI Enlarged)', 'pr_waiver1'),
+            ('PR Opt After Waiver1 (+Opt Waived)', 'pr_opt_after_w1')
+        ]):
+            ax = plt.subplot(num_types * 3, 1, subplot_idx)
+            ax.axis('tight')
+            ax.axis('off')
+
+            # Prepare table data
+            headers = ['Corner'] + params
+            table_data = []
+
+            for corner in corners:
+                row = [corner]
+                for param in params:
+                    if param in type_data[corner] and metric_key in type_data[corner][param]:
+                        pr_value = type_data[corner][param][metric_key]
+                        row.append(f"{pr_value:.1f}%")
+                    else:
+                        row.append("N/A")
+                table_data.append(row)
+
+            # Create table
+            table = ax.table(cellText=table_data, colLabels=headers,
+                           cellLoc='center', loc='center',
+                           bbox=[0, 0, 1, 1])
+
+            table.auto_set_font_size(False)
+            table.set_fontsize(8)
+
+            # Style header row
+            for i in range(len(headers)):
+                cell = table[(0, i)]
+                # Different colors for sigma vs moments headers
+                if i == 0:  # Corner column
+                    cell.set_facecolor('#4472C4')
+                elif headers[i] in ['Early_Sigma', 'Late_Sigma']:  # Sigma columns
+                    cell.set_facecolor('#5B9BD5')
+                else:  # Moments columns
+                    cell.set_facecolor('#70AD47')
+                cell.set_text_props(weight='bold', color='white')
+                cell.set_height(0.1)
+
+            # Apply color coding to data cells
+            for i, corner in enumerate(corners, start=1):
+                # Style corner column (first column)
+                cell = table[(i, 0)]
+                cell.set_facecolor('#F0F0F0')
+                cell.set_text_props(color='black', weight='bold')
+                cell.set_height(0.08)
+
+                # Apply color coding to parameter columns
+                for j, param in enumerate(params, start=1):
+                    cell = table[(i, j)]
+                    if param in type_data[corner] and metric_key in type_data[corner][param]:
+                        pr_value = type_data[corner][param][metric_key]
+                        bg_color, font_color = get_cell_color(pr_value)
+                        cell.set_facecolor(bg_color)
+                        cell.set_text_props(color=font_color, weight='bold')
+                    else:
+                        cell.set_facecolor('#CCCCCC')
+                        cell.set_text_props(color='black')
+                    cell.set_height(0.08)
+
+            # Add subtitle for this table
+            ax.text(0.5, 1.15, f'{type_name.upper()} - {metric_name}',
+                   ha='center', va='top', transform=ax.transAxes,
+                   fontsize=11, fontweight='bold')
+
+            subplot_idx += 1
+
+    # Add main title
+    fig.suptitle('Combined Sigma + Moments Pass Rate Pivot Heatmap',
+                fontsize=14, fontweight='bold', y=0.995)
+
+    # Add legend at the bottom
+    legend_elements = [
+        mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR ≥ 95%)'),
+        mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% ≤ PR < 95%)'),
+        mpatches.Patch(facecolor='#8B0000', edgecolor='black', label='Fail (PR < 90%)'),
+        mpatches.Patch(facecolor='#5B9BD5', edgecolor='black', label='Sigma Parameters'),
+        mpatches.Patch(facecolor='#70AD47', edgecolor='black', label='Moments Parameters')
+    ]
+    fig.legend(handles=legend_elements, loc='lower center',
+              bbox_to_anchor=(0.5, -0.01), ncol=5, frameon=False)
+
+    # Save figure
+    png_file = os.path.join(root_path, "combined_sigma_moments_visualization.png")
+    plt.tight_layout(rect=[0, 0.02, 1, 0.99])
+    plt.savefig(png_file, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    logging.info(f"Combined pivot heatmap visualization saved to: {png_file}")
+
+    return png_file
+
 def main():
     # Set up a main log file
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -871,11 +1067,23 @@ def main():
     if moments_waiver_results:
         logging.info("Generating moments waiver outputs")
 
+        # Read sigma PR table with waivers (new 3-table format)
+        sigma_waiver_results = read_sigma_pr_table_with_waivers(root_path)
+
         # Generate waiver summary tables
         summary_file, csv_file = generate_moments_waiver_summary_table(moments_waiver_results, root_path)
 
         logging.info(f"Moments waiver summary table saved to: {summary_file}")
         logging.info(f"Moments waiver CSV saved to: {csv_file}")
+
+        # Generate combined sigma+moments visualization
+        if sigma_waiver_results:
+            logging.info("Generating combined sigma+moments visualization")
+            viz_file = generate_combined_pass_rate_visualization(moments_waiver_results, sigma_waiver_results, root_path)
+            if viz_file:
+                logging.info(f"Combined visualization saved to: {viz_file}")
+        else:
+            logging.warning("Sigma results not available - skipping combined visualization")
 
         # Print summary to console
         with open(summary_file, 'r') as f:
@@ -889,17 +1097,28 @@ def main():
         print("   Unified pass/fail system with 3 pass rate types")
         print("   CI enlargement waiver (6%)")
         print("   Optimistic waiver AFTER Waiver1")
+        print("   Combined sigma+moments visualization (pivot heatmap)")
         print("   ORIGINAL PASS/FAIL LOGIC PRESERVED")
         print("="*50)
+        if sigma_waiver_results:
+            print(f"Combined visualization: combined_sigma_moments_visualization.png")
+            print("="*50)
     else:
         logging.warning("Could not generate moments waiver summary table - no valid results")
 
     logging.info("="*80)
     logging.info("MOMENTS CHECK WITH WAIVER SYSTEM completed")
     logging.info("Generated outputs:")
-    logging.info("  - moments_PR_table_with_waivers.csv (new waiver table)")
+    logging.info("  - moments_PR_table_with_waivers.csv (3 pass rates)")
     logging.info("  - moments_waiver_summary_table.txt (human-readable summary)")
+    logging.info("  - combined_sigma_moments_visualization.png (pivot heatmap)")
     logging.info("  - *_moments_check_with_waivers.csv (individual corner/type results)")
+    logging.info("")
+    logging.info("IMPORTANT NOTES:")
+    logging.info("  - Integrates with sigma_PR_table_with_waivers.csv")
+    logging.info("  - Combined visualization shows sigma + moments together")
+    logging.info("  - 3 pass rates: Base_PR, PR_with_Waiver1, PR_Opt_After_W1")
+    logging.info("  - Optimistic waiver applied AFTER Waiver1 (CI enlargement)")
 
 if __name__ == "__main__":
     main()
