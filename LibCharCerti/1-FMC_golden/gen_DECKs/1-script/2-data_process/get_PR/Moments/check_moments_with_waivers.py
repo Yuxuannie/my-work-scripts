@@ -7,6 +7,9 @@ import sys
 import logging
 import datetime
 from pathlib import Path
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.table import Table
 
 """
 Enhanced Moments Pass Rate Calculation Script with Unified Waiver System
@@ -24,17 +27,21 @@ Unified Pass/Fail Criteria:
    - Waiver 1: CI Enlargement (CI ± 6%)
      * CI bounds checking ONLY applied here with 6% enlargement
      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
-   - Waiver 2: Optimistic Error Only (lib < mc)
+   - Waiver 2: Optimistic Error Waiver (applied AFTER Waiver 1)
+     * Among failures after Waiver1, waive optimistic errors (lib < mc)
 
-3. Generates 4 pass rates:
+3. Generates 3 pass rates:
    - Base_PR: Error-based only (rel OR abs)
    - PR_with_Waiver1: Base + CI enlargement
-   - PR_Optimistic_Only: Only optimistic errors
-   - PR_with_Both_Waivers: Optimistic + CI enlargement
+   - PR_Optimistic_After_Waiver1: Waiver1 passes + optimistic failures waived
 
 Thresholds (preserved from original):
 - Delay: Meanshift≤1%, Std≤2%, Skew≤5%, abs≤max(0.005×slew, 1ps)
 - Slew: Meanshift≤2%, Std≤4%, Skew≤10%, abs≤max(0.005×slew, 2ps)
+
+Integration with Sigma:
+- Reads sigma_PR_table_with_waivers.csv (3-table format)
+- Combines sigma and moments results in visualization
 
 Output: moments_PR_table_with_waivers.csv
 """
@@ -402,17 +409,17 @@ def process_moments_file_with_waivers(file_path, type_name):
             error_direction_list = []
             final_status_list = []
 
-            # Statistics for 4 pass rate types
+            # Statistics for new waiver system (optimistic tracking AFTER Waiver1)
             waiver_stats = {
                 'base_pass': 0,
                 'pass_with_waiver1': 0,
-                'optimistic_pass': 0,
-                'optimistic_total': 0,
-                'pessimistic_pass': 0,
-                'pass_with_both_waivers': 0,
                 'total_arcs': 0,
                 'optimistic_errors': 0,
-                'pessimistic_errors': 0
+                'pessimistic_errors': 0,
+                'optimistic_pass_waiver1': 0,     # Optimistic that pass Waiver1
+                'optimistic_fail_waiver1': 0,     # Optimistic that fail Waiver1 (can be waived)
+                'pessimistic_pass_waiver1': 0,    # Pessimistic that pass Waiver1
+                'pessimistic_fail_waiver1': 0     # Pessimistic that fail Waiver1 (cannot be waived)
             }
 
             for idx, row in df.iterrows():
@@ -459,17 +466,23 @@ def process_moments_file_with_waivers(file_path, type_name):
                 if base_pass or waiver1_ci_enlarged:
                     waiver_stats['pass_with_waiver1'] += 1
 
-                # Track optimistic/pessimistic errors
+                # Track optimistic/pessimistic errors AFTER Waiver1
+                passes_waiver1 = base_pass or waiver1_ci_enlarged
+
                 if error_direction == 'optimistic':
                     waiver_stats['optimistic_errors'] += 1
-                    waiver_stats['optimistic_total'] += 1
-                    if base_pass or waiver1_ci_enlarged:
-                        waiver_stats['optimistic_pass'] += 1
-                        waiver_stats['pass_with_both_waivers'] += 1
+                    if passes_waiver1:
+                        waiver_stats['optimistic_pass_waiver1'] += 1
+                    else:
+                        # Optimistic error that fails Waiver1 - can be waived
+                        waiver_stats['optimistic_fail_waiver1'] += 1
                 else:  # pessimistic
                     waiver_stats['pessimistic_errors'] += 1
-                    if base_pass or waiver1_ci_enlarged:
-                        waiver_stats['pessimistic_pass'] += 1
+                    if passes_waiver1:
+                        waiver_stats['pessimistic_pass_waiver1'] += 1
+                    else:
+                        # Pessimistic error that fails Waiver1 - cannot be waived
+                        waiver_stats['pessimistic_fail_waiver1'] += 1
 
                 logging.debug(f"  Results for {arc_name}, {param}: base_pass={base_pass}, waiver1={waiver1_ci_enlarged}, error_dir={error_direction}, final={final_status}")
 
@@ -486,24 +499,29 @@ def process_moments_file_with_waivers(file_path, type_name):
             result_df[f'{param}_Error_Direction'] = error_direction_list
             result_df[f'{param}_Final_Status'] = final_status_list
 
-            # Calculate 4 pass rates as per requirement (with 1-digit precision)
+            # Calculate 3 pass rates with NEW logic (optimistic tracking AFTER Waiver1)
             total_count = waiver_stats['total_arcs']
             if total_count > 0:
+                # Pass Rate 1: Base (error-based only)
                 base_pr = (waiver_stats['base_pass'] / total_count) * 100
+
+                # Pass Rate 2: With Waiver1 (Base + CI enlargement)
                 pr_with_waiver1 = (waiver_stats['pass_with_waiver1'] / total_count) * 100
-                pr_optimistic_only = (waiver_stats['optimistic_pass'] / waiver_stats['optimistic_total']) * 100 if waiver_stats['optimistic_total'] > 0 else 0
-                pr_with_both_waivers = (waiver_stats['pass_with_both_waivers'] / waiver_stats['optimistic_total']) * 100 if waiver_stats['optimistic_total'] > 0 else 0
+
+                # Pass Rate 3: Optimistic After Waiver1
+                # = (Arcs that pass Waiver1) + (Optimistic arcs that fail Waiver1, now waived)
+                # This removes pessimistic failures from the fail count
+                pr_optimistic_after_waiver1 = ((waiver_stats['pass_with_waiver1'] + waiver_stats['optimistic_fail_waiver1']) / total_count) * 100
 
                 waiver_summary[param] = {
                     'base_pr': base_pr,
                     'pr_with_waiver1': pr_with_waiver1,
-                    'pr_optimistic_only': pr_optimistic_only,
-                    'pr_with_both_waivers': pr_with_both_waivers,
+                    'pr_optimistic_after_waiver1': pr_optimistic_after_waiver1,
                     'total_arcs': total_count,
                     'optimistic_errors': waiver_stats['optimistic_errors'],
                     'pessimistic_errors': waiver_stats['pessimistic_errors'],
-                    'optimistic_pass': waiver_stats['optimistic_pass'],
-                    'pessimistic_pass': waiver_stats['pessimistic_pass'],
+                    'optimistic_fail_waiver1': waiver_stats['optimistic_fail_waiver1'],
+                    'pessimistic_fail_waiver1': waiver_stats['pessimistic_fail_waiver1'],
                     'pass_with_waiver1_count': waiver_stats['pass_with_waiver1'],
                     'base_pass_count': waiver_stats['base_pass']
                 }
@@ -515,8 +533,9 @@ def process_moments_file_with_waivers(file_path, type_name):
                 logging.info(f"    Pessimistic errors (Lib >= MC): {waiver_stats['pessimistic_errors']} ({waiver_stats['pessimistic_errors']/total_count*100:.1f}%)")
                 logging.info(f"    Base PR: {base_pr:.1f}%")
                 logging.info(f"    PR with Waiver1 (CI enlarged): {pr_with_waiver1:.1f}%")
-                logging.info(f"    PR Optimistic Only: {pr_optimistic_only:.1f}%")
-                logging.info(f"    PR with Both Waivers: {pr_with_both_waivers:.1f}%")
+                logging.info(f"    After Waiver1: Optimistic failures that can be waived: {waiver_stats['optimistic_fail_waiver1']}")
+                logging.info(f"    After Waiver1: Pessimistic failures that cannot be waived: {waiver_stats['pessimistic_fail_waiver1']}")
+                logging.info(f"    PR with Optimistic Waiver (after Waiver1): {pr_optimistic_after_waiver1:.1f}%")
 
         # Save waiver summary for this file
         if hasattr(process_moments_file_with_waivers, 'waiver_summaries'):
@@ -542,28 +561,118 @@ def process_moments_file_with_waivers(file_path, type_name):
         logging.error(f"Error processing {file_path}", exc_info=True)
         return None
 
+def read_sigma_pr_table_with_waivers(root_path):
+    """
+    Read the sigma PR table with waivers (new 3-table CSV format)
+
+    Args:
+        root_path: Root directory where sigma_PR_table_with_waivers.csv is stored
+
+    Returns:
+        dict: Dictionary with (corner, type, metric) keys and sigma PR values
+              metric can be: 'base_pr', 'pr_with_waiver1', 'pr_opt_after_w1'
+    """
+    logging.info("Reading sigma PR table with waivers")
+    sigma_file = os.path.join(root_path, "sigma_PR_table_with_waivers.csv")
+
+    if not os.path.exists(sigma_file):
+        logging.warning(f"Sigma PR table file not found: {sigma_file}")
+        logging.warning("Continuing without sigma data...")
+        return {}
+
+    sigma_pr = {}
+
+    try:
+        # Read the entire file to parse the 3-table format
+        with open(sigma_file, 'r') as f:
+            lines = f.readlines()
+
+        logging.info(f"Sigma PR table loaded successfully. Total lines: {len(lines)}")
+
+        # Parse each of the 3 tables
+        current_table = None
+        current_type = None
+
+        for line in lines:
+            line = line.strip()
+
+            # Identify table sections
+            if line.startswith("TABLE 1: Base_PR"):
+                current_table = 'base_pr'
+                logging.debug("Found TABLE 1: Base_PR")
+                continue
+            elif line.startswith("TABLE 2: PR_with_Waiver1"):
+                current_table = 'pr_with_waiver1'
+                logging.debug("Found TABLE 2: PR_with_Waiver1")
+                continue
+            elif line.startswith("TABLE 3: PR_Optimistic_After_Waiver1"):
+                current_table = 'pr_opt_after_w1'
+                logging.debug("Found TABLE 3: PR_Optimistic_After_Waiver1")
+                continue
+
+            # Identify type sections
+            if line == "DELAY":
+                current_type = 'delay'
+                continue
+            elif line == "SLEW":
+                current_type = 'slew'
+                continue
+            elif line == "HOLD":
+                current_type = 'hold'
+                continue
+
+            # Skip empty lines and non-data lines
+            if not line or line.startswith('Corner') or line.startswith('No '):
+                continue
+
+            # Parse data lines (CSV format)
+            if current_table and current_type and ',' in line:
+                parts = line.split(',')
+                if len(parts) >= 2:
+                    corner = parts[0].strip()
+
+                    # Parse Early_Sigma and Late_Sigma values
+                    for i, param in enumerate(['Early_Sigma', 'Late_Sigma'], start=1):
+                        if i < len(parts):
+                            value_str = parts[i].strip().rstrip('%')
+                            if value_str and value_str != 'N/A':
+                                try:
+                                    pr_value = float(value_str)
+                                    key = (corner, current_type, current_table, param)
+                                    sigma_pr[key] = pr_value
+                                    logging.debug(f"  Loaded {key}: {pr_value:.1f}%")
+                                except ValueError:
+                                    pass
+
+        logging.info(f"Loaded {len(sigma_pr)} sigma PR values across all tables")
+
+    except Exception as e:
+        logging.error(f"Error reading sigma PR table", exc_info=True)
+
+    return sigma_pr
+
 def generate_moments_waiver_summary_table(results, root_path):
     """
-    Generate summary table with 4 pass rate columns for moments
+    Generate summary table with 3 pass rate columns for moments
 
     Returns:
         str: Path to the summary file
     """
-    logging.info("Generating moments waiver summary table with 4 pass rates")
+    logging.info("Generating moments waiver summary table with 3 pass rates")
 
-    # Create dataframes for each type
+    # Create dataframes for each type (3 pass rates)
     delay_df = pd.DataFrame(columns=[
         'Corner',
-        'Meanshift_Base_PR', 'Meanshift_PR_with_Waiver1', 'Meanshift_PR_Optimistic_Only', 'Meanshift_PR_with_Both_Waivers',
-        'Std_Base_PR', 'Std_PR_with_Waiver1', 'Std_PR_Optimistic_Only', 'Std_PR_with_Both_Waivers',
-        'Skew_Base_PR', 'Skew_PR_with_Waiver1', 'Skew_PR_Optimistic_Only', 'Skew_PR_with_Both_Waivers'
+        'Meanshift_Base_PR', 'Meanshift_PR_with_Waiver1', 'Meanshift_PR_Opt_After_W1',
+        'Std_Base_PR', 'Std_PR_with_Waiver1', 'Std_PR_Opt_After_W1',
+        'Skew_Base_PR', 'Skew_PR_with_Waiver1', 'Skew_PR_Opt_After_W1'
     ])
 
     slew_df = pd.DataFrame(columns=[
         'Corner',
-        'Meanshift_Base_PR', 'Meanshift_PR_with_Waiver1', 'Meanshift_PR_Optimistic_Only', 'Meanshift_PR_with_Both_Waivers',
-        'Std_Base_PR', 'Std_PR_with_Waiver1', 'Std_PR_Optimistic_Only', 'Std_PR_with_Both_Waivers',
-        'Skew_Base_PR', 'Skew_PR_with_Waiver1', 'Skew_PR_Optimistic_Only', 'Skew_PR_with_Both_Waivers'
+        'Meanshift_Base_PR', 'Meanshift_PR_with_Waiver1', 'Meanshift_PR_Opt_After_W1',
+        'Std_Base_PR', 'Std_PR_with_Waiver1', 'Std_PR_Opt_After_W1',
+        'Skew_Base_PR', 'Skew_PR_with_Waiver1', 'Skew_PR_Opt_After_W1'
     ])
 
     # Extract corner name from file name
@@ -617,13 +726,11 @@ def generate_moments_waiver_summary_table(results, root_path):
                     if param in rates:
                         new_row[f'{param}_Base_PR'] = f"{rates[param]['base_pr']:.1f}%"
                         new_row[f'{param}_PR_with_Waiver1'] = f"{rates[param]['pr_with_waiver1']:.1f}%"
-                        new_row[f'{param}_PR_Optimistic_Only'] = f"{rates[param]['pr_optimistic_only']:.1f}%"
-                        new_row[f'{param}_PR_with_Both_Waivers'] = f"{rates[param]['pr_with_both_waivers']:.1f}%"
+                        new_row[f'{param}_PR_Opt_After_W1'] = f"{rates[param]['pr_optimistic_after_waiver1']:.1f}%"
                     else:
                         new_row[f'{param}_Base_PR'] = "N/A"
                         new_row[f'{param}_PR_with_Waiver1'] = "N/A"
-                        new_row[f'{param}_PR_Optimistic_Only'] = "N/A"
-                        new_row[f'{param}_PR_with_Both_Waivers'] = "N/A"
+                        new_row[f'{param}_PR_Opt_After_W1'] = "N/A"
 
                 # Add to the appropriate dataframe
                 if type_name == 'delay':
@@ -632,12 +739,11 @@ def generate_moments_waiver_summary_table(results, root_path):
                     slew_df = pd.concat([slew_df, pd.DataFrame([new_row])], ignore_index=True)
 
     # Create the summary string
-    summary = "Moments Waiver Summary Table (4 Pass Rates with 1-digit precision)\n\n"
+    summary = "Moments Waiver Summary Table (3 Pass Rates with 1-digit precision)\n\n"
     summary += "Pass Rate Definitions:\n"
-    summary += "- Base_PR: Pass rate using only base criteria (Check 1 OR Check 2)\n"
-    summary += "- PR_with_Waiver1: Pass rate including CI enlargement waiver\n"
-    summary += "- PR_Optimistic_Only: Pass rate if we ONLY consider optimistic errors (Lib < MC)\n"
-    summary += "- PR_with_Both_Waivers: Pass rate with both CI enlargement AND optimistic-only filtering\n\n"
+    summary += "- Base_PR: Error-based only (rel OR abs, NO CI bounds)\n"
+    summary += "- PR_with_Waiver1: Base + CI bounds with 6% enlargement\n"
+    summary += "- PR_Opt_After_W1: Waiver1 passes + optimistic failures waived\n\n"
 
     summary += "Delay:\n"
     summary += delay_df.to_string(index=False) if not delay_df.empty else "No delay data"
@@ -684,7 +790,7 @@ def main():
     logging.info("Starting MOMENTS CHECK WITH UNIFIED WAIVER SYSTEM")
     logging.info(f"Main log file: {main_log_file}")
     logging.info("Implements unified pass/fail system with structured waivers")
-    logging.info("Generates 4 pass rates: Base, +Waiver1, Optimistic Only, +Both Waivers")
+    logging.info("Generates 3 pass rates: Base, +Waiver1 (CI), +Optimistic After Waiver1")
     logging.info("ORIGINAL LOGIC PRESERVED - Adding waiver features on top")
     logging.info("="*80)
 
@@ -775,14 +881,14 @@ def main():
         with open(summary_file, 'r') as f:
             summary_content = f.read()
         print('\n' + "="*50)
-        print("MOMENTS WAIVER SUMMARY TABLE (4 Pass Rates):")
+        print("MOMENTS WAIVER SUMMARY TABLE (3 Pass Rates):")
         print(f"="*50)
         print(summary_content)
         print("="*50)
         print("ENHANCEMENTS ADDED:")
-        print("   Unified pass/fail system with 4 pass rate types")
+        print("   Unified pass/fail system with 3 pass rate types")
         print("   CI enlargement waiver (6%)")
-        print("   Optimistic vs pessimistic error analysis")
+        print("   Optimistic waiver AFTER Waiver1")
         print("   ORIGINAL PASS/FAIL LOGIC PRESERVED")
         print("="*50)
     else:
