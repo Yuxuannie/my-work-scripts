@@ -27,13 +27,14 @@ Unified Pass/Fail Criteria:
    - Waiver 1: CI Enlargement (CI +/- 6%)
      * CI bounds checking ONLY applied here with 6% enlargement
      * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]
-   - Waiver 2: Optimistic Error Waiver (applied AFTER Waiver 1)
-     * Among failures after Waiver1, waive optimistic errors (lib < mc)
+   - Waiver 2: Focus on Optimistic Errors Only (applied AFTER Waiver 1)
+     * Among failures after Waiver1, waive pessimistic errors (lib >= mc)
+     * Only count optimistic errors (lib < mc) as real failures
 
 3. Generates 3 pass rates:
    - Base_PR: Error-based only (rel OR abs)
    - PR_with_Waiver1: Base + CI enlargement
-   - PR_Optimistic_After_Waiver1: Waiver1 passes + optimistic failures waived
+   - PR_Optimistic_After_Waiver1: Waiver1 passes + pessimistic failures waived
 
 Thresholds (preserved from original):
 - Delay: Meanshift<=1%, Std<=2%, Skew<=5%, abs<=max(0.005*slew, 1ps)
@@ -509,9 +510,9 @@ def process_moments_file_with_waivers(file_path, type_name):
                 pr_with_waiver1 = (waiver_stats['pass_with_waiver1'] / total_count) * 100
 
                 # Pass Rate 3: Optimistic After Waiver1
-                # = (Arcs that pass Waiver1) + (Optimistic arcs that fail Waiver1, now waived)
-                # This removes pessimistic failures from the fail count
-                pr_optimistic_after_waiver1 = ((waiver_stats['pass_with_waiver1'] + waiver_stats['optimistic_fail_waiver1']) / total_count) * 100
+                # = (Arcs that pass Waiver1) + (Pessimistic arcs that fail Waiver1, now waived)
+                # This focuses only on optimistic errors - pessimistic failures are waived
+                pr_optimistic_after_waiver1 = ((waiver_stats['pass_with_waiver1'] + waiver_stats['pessimistic_fail_waiver1']) / total_count) * 100
 
                 waiver_summary[param] = {
                     'base_pr': base_pr,
@@ -533,8 +534,8 @@ def process_moments_file_with_waivers(file_path, type_name):
                 logging.info(f"    Pessimistic errors (Lib >= MC): {waiver_stats['pessimistic_errors']} ({waiver_stats['pessimistic_errors']/total_count*100:.1f}%)")
                 logging.info(f"    Base PR: {base_pr:.1f}%")
                 logging.info(f"    PR with Waiver1 (CI enlarged): {pr_with_waiver1:.1f}%")
-                logging.info(f"    After Waiver1: Optimistic failures that can be waived: {waiver_stats['optimistic_fail_waiver1']}")
-                logging.info(f"    After Waiver1: Pessimistic failures that cannot be waived: {waiver_stats['pessimistic_fail_waiver1']}")
+                logging.info(f"    After Waiver1: Optimistic failures (counted as real failures): {waiver_stats['optimistic_fail_waiver1']}")
+                logging.info(f"    After Waiver1: Pessimistic failures (waived): {waiver_stats['pessimistic_fail_waiver1']}")
                 logging.info(f"    PR with Optimistic Waiver (after Waiver1): {pr_optimistic_after_waiver1:.1f}%")
 
         # Save waiver summary for this file
@@ -743,7 +744,7 @@ def generate_moments_waiver_summary_table(results, root_path):
     summary += "Pass Rate Definitions:\n"
     summary += "- Base_PR: Error-based only (rel OR abs, NO CI bounds)\n"
     summary += "- PR_with_Waiver1: Base + CI bounds with 6% enlargement\n"
-    summary += "- PR_Opt_After_W1: Waiver1 passes + optimistic failures waived\n\n"
+    summary += "- PR_Opt_After_W1: Waiver1 passes + pessimistic failures waived\n\n"
 
     summary += "Delay:\n"
     summary += delay_df.to_string(index=False) if not delay_df.empty else "No delay data"
@@ -1118,7 +1119,7 @@ def main():
     logging.info("  - Integrates with sigma_PR_table_with_waivers.csv")
     logging.info("  - Combined visualization shows sigma + moments together")
     logging.info("  - 3 pass rates: Base_PR, PR_with_Waiver1, PR_Opt_After_W1")
-    logging.info("  - Optimistic waiver applied AFTER Waiver1 (CI enlargement)")
+    logging.info("  - Focus on optimistic errors: Pessimistic failures waived AFTER Waiver1")
 
 if __name__ == "__main__":
     main()

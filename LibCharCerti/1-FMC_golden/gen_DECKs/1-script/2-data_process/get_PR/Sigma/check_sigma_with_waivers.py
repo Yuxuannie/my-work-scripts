@@ -26,13 +26,14 @@ Implements unified pass/fail system with structured waivers:
    - Waiver 1: CI Enlargement (CI +/- 6%)
      * CI bounds checking ONLY applied here with 6% enlargement
      * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]
-   - Waiver 2: Optimistic Error Waiver (applied AFTER Waiver 1)
-     * Among failures after Waiver1, waive optimistic errors (lib < mc)
+   - Waiver 2: Focus on Optimistic Errors Only (applied AFTER Waiver 1)
+     * Among failures after Waiver1, waive pessimistic errors (lib >= mc)
+     * Only count optimistic errors (lib < mc) as real failures
 
 3. Generates 3 pass rates:
    - Base_PR: Error-based only (rel OR abs)
    - PR_with_Waiver1: Base + CI enlargement
-   - PR_Optimistic_After_Waiver1: Waiver1 passes + optimistic failures waived
+   - PR_Optimistic_After_Waiver1: Waiver1 passes + pessimistic failures waived
 
 Output: sigma_PR_table_with_waivers.csv
 """
@@ -489,9 +490,9 @@ def process_sigma_file_with_waivers(file_path, type_name):
                 pr_with_waiver1 = (waiver_stats['pass_with_waiver1'] / total_count) * 100
 
                 # Pass Rate 3: Optimistic After Waiver1
-                # = (Arcs that pass Waiver1) + (Optimistic arcs that fail Waiver1, now waived)
-                # This removes pessimistic failures from the fail count
-                pr_optimistic_after_waiver1 = ((waiver_stats['pass_with_waiver1'] + waiver_stats['optimistic_fail_waiver1']) / total_count) * 100
+                # = (Arcs that pass Waiver1) + (Pessimistic arcs that fail Waiver1, now waived)
+                # This focuses only on optimistic errors - pessimistic failures are waived
+                pr_optimistic_after_waiver1 = ((waiver_stats['pass_with_waiver1'] + waiver_stats['pessimistic_fail_waiver1']) / total_count) * 100
 
                 waiver_summary[param] = {
                     'base_pr': base_pr,
@@ -513,8 +514,8 @@ def process_sigma_file_with_waivers(file_path, type_name):
                 logging.info(f"    Pessimistic errors (Lib >= MC): {waiver_stats['pessimistic_errors']} ({waiver_stats['pessimistic_errors']/total_count*100:.1f}%)")
                 logging.info(f"    Base PR: {base_pr:.1f}%")
                 logging.info(f"    PR with Waiver1 (CI enlarged): {pr_with_waiver1:.1f}%")
-                logging.info(f"    After Waiver1: Optimistic failures that can be waived: {waiver_stats['optimistic_fail_waiver1']}")
-                logging.info(f"    After Waiver1: Pessimistic failures that cannot be waived: {waiver_stats['pessimistic_fail_waiver1']}")
+                logging.info(f"    After Waiver1: Optimistic failures (counted as real failures): {waiver_stats['optimistic_fail_waiver1']}")
+                logging.info(f"    After Waiver1: Pessimistic failures (waived): {waiver_stats['pessimistic_fail_waiver1']}")
                 logging.info(f"    PR with Optimistic Waiver (after Waiver1): {pr_optimistic_after_waiver1:.1f}%")
 
         # Save waiver summary for this file
@@ -546,7 +547,7 @@ def generate_waiver_summary_table(results, root_path):
     Generate summary CSV with 3 separate tables:
     1. Base_PR only (error-based)
     2. PR_with_Waiver1 (Base + CI enlargement)
-    3. PR_Optimistic_After_Waiver1 (Waiver1 passes + optimistic failures waived)
+    3. PR_Optimistic_After_Waiver1 (Waiver1 passes + pessimistic failures waived)
 
     Returns:
         str: Path to the CSV file
@@ -703,7 +704,7 @@ def generate_waiver_summary_table(results, root_path):
         f.write("\n\n")
 
         # Table 3: PR_Optimistic_After_Waiver1
-        f.write("TABLE 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + Optimistic failures waived)\n")
+        f.write("TABLE 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + Pessimistic failures waived)\n")
         f.write("\n")
         f.write("DELAY\n")
         if not opt_delay_df.empty:
@@ -792,14 +793,14 @@ def generate_detailed_checking_validation(results, root_path):
             validation_report.append(f"")
             validation_report.append(f"  CONCLUSION:")
             if pr_with_waiver1 >= 95:
-                validation_report.append(f"    ✓ PR_with_Waiver1 ({pr_with_waiver1:.1f}%) is at or above 95% target")
+                validation_report.append(f"    [PASS] PR_with_Waiver1 ({pr_with_waiver1:.1f}%) is at or above 95% target")
             else:
-                validation_report.append(f"    ✗ Even with CI waiver, PR ({pr_with_waiver1:.1f}%) is below 95% target")
+                validation_report.append(f"    [FAIL] Even with CI waiver, PR ({pr_with_waiver1:.1f}%) is below 95% target")
 
             if abs(pr_with_waiver1 - 100.0) < 1.0:
-                validation_report.append(f"    ✓ PR_with_Waiver1 is near perfect (~100%)")
+                validation_report.append(f"    [PASS] PR_with_Waiver1 is near perfect (~100%)")
             elif base_pr < 60 and pr_with_waiver1 > 90:
-                validation_report.append(f"    ⚠ Large CI enlargement contribution indicates many arcs just outside CI bounds")
+                validation_report.append(f"    [WARNING] Large CI enlargement contribution indicates many arcs just outside CI bounds")
 
         validation_report.append("")
 
@@ -1161,7 +1162,7 @@ def main():
     logging.info("IMPORTANT NOTES:")
     logging.info("  - Table 1: Base_PR (Error-based only - rel OR abs, NO CI bounds)")
     logging.info("  - Table 2: PR_with_Waiver1 (Base + CI bounds with 6% enlargement)")
-    logging.info("  - Table 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + optimistic failures waived)")
+    logging.info("  - Table 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + pessimistic failures waived)")
     logging.info("  - Visualization: Pivot heatmap with parameters as columns, corners as rows")
     logging.info("  - Color coding:")
     logging.info("    * Light green (grey font): Pass (PR >= 95%)")
