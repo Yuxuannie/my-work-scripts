@@ -23,9 +23,9 @@ Implements unified pass/fail system with structured waivers:
    - NOTE: CI bounds checking is REMOVED from base pass
 
 2. Waiver System:
-   - Waiver 1: CI Enlargement (CI ± 6%)
+   - Waiver 1: CI Enlargement (CI +/- 6%)
      * CI bounds checking ONLY applied here with 6% enlargement
-     * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
+     * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]
    - Waiver 2: Optimistic Error Waiver (applied AFTER Waiver 1)
      * Among failures after Waiver1, waive optimistic errors (lib < mc)
 
@@ -92,9 +92,9 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
     - Base Pass = Check 1 ONLY (CI bounds NOT included in base)
 
     Waivers:
-    - Waiver 1: CI Enlargement (CI ± 6%)
+    - Waiver 1: CI Enlargement (CI +/- 6%)
       * CI bounds checking ONLY applied here with 6% enlargement
-      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
+      * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]
     - Waiver 2: Optimistic Error Only (lib < mc)
 
     Args:
@@ -753,7 +753,7 @@ def generate_detailed_checking_validation(results, root_path):
     validation_report.append("    - Check1: (Relative error <= threshold) OR (Absolute error <= threshold)")
     validation_report.append("    - Waiver1: CI bounds with 6% enlargement")
     validation_report.append("      * CI bounds checking ONLY applied in waiver with enlargement")
-    validation_report.append("      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]")
+    validation_report.append("      * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]")
     validation_report.append("")
     validation_report.append("KEY DIFFERENCES:")
     validation_report.append("  1. Base_PR excludes ALL CI bounds checking (stricter than before)")
@@ -957,8 +957,8 @@ def generate_pass_rate_visualization(results, root_path):
 
     # Add legend at the bottom
     legend_elements = [
-        mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR ≥ 95%)'),
-        mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% ≤ PR < 95%)'),
+        mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR >= 95%)'),
+        mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% <= PR < 95%)'),
         mpatches.Patch(facecolor='#8B0000', edgecolor='black', label='Fail (PR < 90%)')
     ]
     fig.legend(handles=legend_elements, loc='lower center',
@@ -1164,8 +1164,8 @@ def main():
     logging.info("  - Table 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + optimistic failures waived)")
     logging.info("  - Visualization: Pivot heatmap with parameters as columns, corners as rows")
     logging.info("  - Color coding:")
-    logging.info("    * Light green (grey font): Pass (PR ≥ 95%)")
-    logging.info("    * Orange (black font): Marginally Pass (90% ≤ PR < 95%)")
+    logging.info("    * Light green (grey font): Pass (PR >= 95%)")
+    logging.info("    * Orange (black font): Marginally Pass (90% <= PR < 95%)")
     logging.info("    * Dark red (white font): Fail (PR < 90%)")
 
 if __name__ == "__main__":

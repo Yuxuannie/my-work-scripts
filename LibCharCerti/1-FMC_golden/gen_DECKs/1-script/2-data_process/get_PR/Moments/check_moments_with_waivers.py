@@ -24,9 +24,9 @@ Unified Pass/Fail Criteria:
    - NOTE: CI bounds checking is REMOVED from base pass
 
 2. Waiver System:
-   - Waiver 1: CI Enlargement (CI ± 6%)
+   - Waiver 1: CI Enlargement (CI +/- 6%)
      * CI bounds checking ONLY applied here with 6% enlargement
-     * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
+     * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]
    - Waiver 2: Optimistic Error Waiver (applied AFTER Waiver 1)
      * Among failures after Waiver1, waive optimistic errors (lib < mc)
 
@@ -36,8 +36,8 @@ Unified Pass/Fail Criteria:
    - PR_Optimistic_After_Waiver1: Waiver1 passes + optimistic failures waived
 
 Thresholds (preserved from original):
-- Delay: Meanshift≤1%, Std≤2%, Skew≤5%, abs≤max(0.005×slew, 1ps)
-- Slew: Meanshift≤2%, Std≤4%, Skew≤10%, abs≤max(0.005×slew, 2ps)
+- Delay: Meanshift<=1%, Std<=2%, Skew<=5%, abs<=max(0.005*slew, 1ps)
+- Slew: Meanshift<=2%, Std<=4%, Skew<=10%, abs<=max(0.005*slew, 2ps)
 
 Integration with Sigma:
 - Reads sigma_PR_table_with_waivers.csv (3-table format)
@@ -72,9 +72,9 @@ def check_pass_with_waivers_moments(row, type_name, param_name, mc_prefix='MC', 
     - Base Pass = Check 1 ONLY (CI bounds NOT included in base)
 
     Waivers:
-    - Waiver 1: CI Enlargement (CI ± 6%)
+    - Waiver 1: CI Enlargement (CI +/- 6%)
       * CI bounds checking ONLY applied here with 6% enlargement
-      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
+      * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]
     - Waiver 2: Optimistic Error Only (lib < mc)
 
     Args:
@@ -948,8 +948,8 @@ def generate_combined_pass_rate_visualization(moments_results, sigma_results, ro
 
     # Add legend at the bottom
     legend_elements = [
-        mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR ≥ 95%)'),
-        mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% ≤ PR < 95%)'),
+        mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR >= 95%)'),
+        mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% <= PR < 95%)'),
         mpatches.Patch(facecolor='#8B0000', edgecolor='black', label='Fail (PR < 90%)'),
         mpatches.Patch(facecolor='#5B9BD5', edgecolor='black', label='Sigma Parameters'),
         mpatches.Patch(facecolor='#70AD47', edgecolor='black', label='Moments Parameters')
