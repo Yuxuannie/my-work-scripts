@@ -23,16 +23,17 @@ Implements unified pass/fail system with structured waivers:
    - NOTE: CI bounds checking is REMOVED from base pass
 
 2. Waiver System:
-   - Waiver 1: CI Enlargement (CI ± 6%)
+   - Waiver 1: CI Enlargement (CI +/- 6%)
      * CI bounds checking ONLY applied here with 6% enlargement
-     * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
-   - Waiver 2: Optimistic Error Waiver (applied AFTER Waiver 1)
-     * Among failures after Waiver1, waive optimistic errors (lib < mc)
+     * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]
+   - Waiver 2: Focus on Optimistic Errors Only (applied AFTER Waiver 1)
+     * Among failures after Waiver1, waive pessimistic errors (lib >= mc)
+     * Only count optimistic errors (lib < mc) as real failures
 
 3. Generates 3 pass rates:
    - Base_PR: Error-based only (rel OR abs)
    - PR_with_Waiver1: Base + CI enlargement
-   - PR_Optimistic_After_Waiver1: Waiver1 passes + optimistic failures waived
+   - PR_Optimistic_After_Waiver1: Waiver1 passes + pessimistic failures waived
 
 Output: sigma_PR_table_with_waivers.csv
 """
@@ -92,9 +93,9 @@ def check_pass_with_waivers(row, type_name, param_name, mc_prefix='MC', lib_pref
     - Base Pass = Check 1 ONLY (CI bounds NOT included in base)
 
     Waivers:
-    - Waiver 1: CI Enlargement (CI ± 6%)
+    - Waiver 1: CI Enlargement (CI +/- 6%)
       * CI bounds checking ONLY applied here with 6% enlargement
-      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]
+      * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]
     - Waiver 2: Optimistic Error Only (lib < mc)
 
     Args:
@@ -489,9 +490,9 @@ def process_sigma_file_with_waivers(file_path, type_name):
                 pr_with_waiver1 = (waiver_stats['pass_with_waiver1'] / total_count) * 100
 
                 # Pass Rate 3: Optimistic After Waiver1
-                # = (Arcs that pass Waiver1) + (Optimistic arcs that fail Waiver1, now waived)
-                # This removes pessimistic failures from the fail count
-                pr_optimistic_after_waiver1 = ((waiver_stats['pass_with_waiver1'] + waiver_stats['optimistic_fail_waiver1']) / total_count) * 100
+                # = (Arcs that pass Waiver1) + (Pessimistic arcs that fail Waiver1, now waived)
+                # This focuses only on optimistic errors - pessimistic failures are waived
+                pr_optimistic_after_waiver1 = ((waiver_stats['pass_with_waiver1'] + waiver_stats['pessimistic_fail_waiver1']) / total_count) * 100
 
                 waiver_summary[param] = {
                     'base_pr': base_pr,
@@ -513,8 +514,8 @@ def process_sigma_file_with_waivers(file_path, type_name):
                 logging.info(f"    Pessimistic errors (Lib >= MC): {waiver_stats['pessimistic_errors']} ({waiver_stats['pessimistic_errors']/total_count*100:.1f}%)")
                 logging.info(f"    Base PR: {base_pr:.1f}%")
                 logging.info(f"    PR with Waiver1 (CI enlarged): {pr_with_waiver1:.1f}%")
-                logging.info(f"    After Waiver1: Optimistic failures that can be waived: {waiver_stats['optimistic_fail_waiver1']}")
-                logging.info(f"    After Waiver1: Pessimistic failures that cannot be waived: {waiver_stats['pessimistic_fail_waiver1']}")
+                logging.info(f"    After Waiver1: Optimistic failures (counted as real failures): {waiver_stats['optimistic_fail_waiver1']}")
+                logging.info(f"    After Waiver1: Pessimistic failures (waived): {waiver_stats['pessimistic_fail_waiver1']}")
                 logging.info(f"    PR with Optimistic Waiver (after Waiver1): {pr_optimistic_after_waiver1:.1f}%")
 
         # Save waiver summary for this file
@@ -546,7 +547,7 @@ def generate_waiver_summary_table(results, root_path):
     Generate summary CSV with 3 separate tables:
     1. Base_PR only (error-based)
     2. PR_with_Waiver1 (Base + CI enlargement)
-    3. PR_Optimistic_After_Waiver1 (Waiver1 passes + optimistic failures waived)
+    3. PR_Optimistic_After_Waiver1 (Waiver1 passes + pessimistic failures waived)
 
     Returns:
         str: Path to the CSV file
@@ -703,7 +704,7 @@ def generate_waiver_summary_table(results, root_path):
         f.write("\n\n")
 
         # Table 3: PR_Optimistic_After_Waiver1
-        f.write("TABLE 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + Optimistic failures waived)\n")
+        f.write("TABLE 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + Pessimistic failures waived)\n")
         f.write("\n")
         f.write("DELAY\n")
         if not opt_delay_df.empty:
@@ -753,7 +754,7 @@ def generate_detailed_checking_validation(results, root_path):
     validation_report.append("    - Check1: (Relative error <= threshold) OR (Absolute error <= threshold)")
     validation_report.append("    - Waiver1: CI bounds with 6% enlargement")
     validation_report.append("      * CI bounds checking ONLY applied in waiver with enlargement")
-    validation_report.append("      * lib_value within [CI_LB - 6%×CI_width, CI_UB + 6%×CI_width]")
+    validation_report.append("      * lib_value within [CI_LB - 6%*CI_width, CI_UB + 6%*CI_width]")
     validation_report.append("")
     validation_report.append("KEY DIFFERENCES:")
     validation_report.append("  1. Base_PR excludes ALL CI bounds checking (stricter than before)")
@@ -792,14 +793,14 @@ def generate_detailed_checking_validation(results, root_path):
             validation_report.append(f"")
             validation_report.append(f"  CONCLUSION:")
             if pr_with_waiver1 >= 95:
-                validation_report.append(f"    ✓ PR_with_Waiver1 ({pr_with_waiver1:.1f}%) is at or above 95% target")
+                validation_report.append(f"    [PASS] PR_with_Waiver1 ({pr_with_waiver1:.1f}%) is at or above 95% target")
             else:
-                validation_report.append(f"    ✗ Even with CI waiver, PR ({pr_with_waiver1:.1f}%) is below 95% target")
+                validation_report.append(f"    [FAIL] Even with CI waiver, PR ({pr_with_waiver1:.1f}%) is below 95% target")
 
             if abs(pr_with_waiver1 - 100.0) < 1.0:
-                validation_report.append(f"    ✓ PR_with_Waiver1 is near perfect (~100%)")
+                validation_report.append(f"    [PASS] PR_with_Waiver1 is near perfect (~100%)")
             elif base_pr < 60 and pr_with_waiver1 > 90:
-                validation_report.append(f"    ⚠ Large CI enlargement contribution indicates many arcs just outside CI bounds")
+                validation_report.append(f"    [WARNING] Large CI enlargement contribution indicates many arcs just outside CI bounds")
 
         validation_report.append("")
 
@@ -816,9 +817,10 @@ def generate_detailed_checking_validation(results, root_path):
 def generate_pass_rate_visualization(results, root_path):
     """
     Generate a pivot-style heatmap PNG visualization with:
-    - Parameters (Early_Sigma, Late_Sigma) as column headers
+    - Parameters (Early_Sigma, Late_Sigma) as column groups
+    - Each parameter has 3 sub-columns: Base PR, +Waiver1, +Opt After W1
     - Corners as row headers
-    - 3 sections: Base_PR, PR_with_Waiver1, PR_Optimistic_After_Waiver1
+    - Shows waiver improvement trend clearly within each parameter
     - All in ONE PNG file
 
     Color coding:
@@ -826,7 +828,7 @@ def generate_pass_rate_visualization(results, root_path):
     - 90% <= PR < 95%: Orange background, black font (Marginally Pass)
     - PR < 90%: Dark red background, white font (Fail)
     """
-    logging.info("Generating pivot heatmap pass rate visualization")
+    logging.info("Generating sigma waiver trend visualization")
 
     def get_cell_color(pr_value):
         """Return background and font colors based on pass rate value"""
@@ -870,7 +872,7 @@ def generate_pass_rate_visualization(results, root_path):
 
     # Create figure with subplots for each type
     num_types = sum(1 for v in data_by_type.values() if v)
-    fig = plt.figure(figsize=(14, 4 * num_types + 2))
+    fig = plt.figure(figsize=(18, 5 * num_types))
 
     subplot_idx = 1
 
@@ -884,93 +886,119 @@ def generate_pass_rate_visualization(results, root_path):
         # Determine which parameters are available for this type
         params = ['Early_Sigma', 'Late_Sigma'] if type_name in ['delay', 'slew'] else ['Late_Sigma']
 
-        # Create 3 subtables for this type (Base, Waiver1, Opt_After_W1)
-        for metric_idx, (metric_name, metric_key) in enumerate([
-            ('Base PR (Error-based)', 'base_pr'),
-            ('PR with Waiver1 (+CI Enlarged)', 'pr_waiver1'),
-            ('PR Opt After Waiver1 (+Opt Waived)', 'pr_opt_after_w1')
-        ]):
-            ax = plt.subplot(num_types * 3, 1, subplot_idx)
-            ax.axis('tight')
-            ax.axis('off')
+        # Create ONE table per type showing all 3 pass rates side-by-side
+        ax = plt.subplot(num_types, 1, subplot_idx)
+        ax.axis('tight')
+        ax.axis('off')
 
-            # Prepare table data
-            headers = ['Corner'] + params
-            table_data = []
+        # Build headers: Corner | Param1_Base | Param1_W1 | Param1_Opt | Param2_Base | ...
+        headers = ['Corner']
 
-            for corner in corners:
-                row = [corner]
-                for param in params:
-                    if param in type_data[corner]:
-                        pr_value = type_data[corner][param][metric_key]
-                        row.append(f"{pr_value:.1f}%")
-                    else:
-                        row.append("N/A")
-                table_data.append(row)
+        for param in params:
+            headers.extend([f'{param}\nBase', f'{param}\n+W1', f'{param}\n+Opt'])
 
-            # Create table
-            table = ax.table(cellText=table_data, colLabels=headers,
-                           cellLoc='center', loc='center',
-                           bbox=[0, 0, 1, 1])
+        # Prepare table data
+        table_data = []
 
-            table.auto_set_font_size(False)
-            table.set_fontsize(9)
+        for corner in corners:
+            row = [corner]
+            for param in params:
+                # Get all 3 pass rates for this parameter
+                if param in type_data[corner]:
+                    base_pr = type_data[corner][param]['base_pr']
+                    w1_pr = type_data[corner][param]['pr_waiver1']
+                    opt_pr = type_data[corner][param]['pr_opt_after_w1']
 
-            # Style header row
-            for i in range(len(headers)):
-                cell = table[(0, i)]
+                    row.append(f"{base_pr:.1f}")
+                    row.append(f"{w1_pr:.1f}")
+                    row.append(f"{opt_pr:.1f}")
+                else:
+                    row.extend(["N/A", "N/A", "N/A"])
+
+            table_data.append(row)
+
+        # Create table
+        table = ax.table(cellText=table_data, colLabels=headers,
+                       cellLoc='center', loc='center',
+                       bbox=[0, 0, 1, 1])
+
+        table.auto_set_font_size(False)
+        table.set_fontsize(8)
+
+        # Style header row
+        for i, header in enumerate(headers):
+            cell = table[(0, i)]
+            if i == 0:  # Corner column
                 cell.set_facecolor('#4472C4')
-                cell.set_text_props(weight='bold', color='white')
-                cell.set_height(0.1)
+            else:
+                # All sigma parameters get blue color
+                cell.set_facecolor('#5B9BD5')
 
-            # Apply color coding to data cells
-            for i, corner in enumerate(corners, start=1):
-                # Style corner column (first column)
-                cell = table[(i, 0)]
-                cell.set_facecolor('#F0F0F0')
-                cell.set_text_props(color='black', weight='bold')
-                cell.set_height(0.08)
+            cell.set_text_props(weight='bold', color='white', fontsize=8)
+            cell.set_height(0.12)
 
-                # Apply color coding to parameter columns
-                for j, param in enumerate(params, start=1):
-                    cell = table[(i, j)]
-                    if param in type_data[corner]:
-                        pr_value = type_data[corner][param][metric_key]
+        # Apply color coding to data cells
+        for i, corner in enumerate(corners, start=1):
+            # Style corner column
+            cell = table[(i, 0)]
+            cell.set_facecolor('#F0F0F0')
+            cell.set_text_props(color='black', weight='bold', fontsize=8)
+            cell.set_height(0.1)
+
+            # Apply color coding to PR value columns
+            for j in range(1, len(headers)):
+                cell = table[(i, j)]
+                cell_value = table_data[i-1][j]
+
+                if cell_value != "N/A":
+                    try:
+                        pr_value = float(cell_value)
                         bg_color, font_color = get_cell_color(pr_value)
                         cell.set_facecolor(bg_color)
-                        cell.set_text_props(color=font_color, weight='bold')
-                    else:
+                        cell.set_text_props(color=font_color, weight='bold', fontsize=8)
+                    except ValueError:
                         cell.set_facecolor('#CCCCCC')
-                        cell.set_text_props(color='black')
-                    cell.set_height(0.08)
+                        cell.set_text_props(color='black', fontsize=8)
+                else:
+                    cell.set_facecolor('#CCCCCC')
+                    cell.set_text_props(color='black', fontsize=8)
+                cell.set_height(0.1)
 
-            # Add subtitle for this table
-            ax.text(0.5, 1.15, f'{type_name.upper()} - {metric_name}',
-                   ha='center', va='top', transform=ax.transAxes,
-                   fontsize=11, fontweight='bold')
+        # Add title for this table
+        ax.text(0.5, 1.05, f'{type_name.upper()} - Pass Rate Waiver Progression (Base -> +Waiver1 -> +Opt After W1)',
+               ha='center', va='top', transform=ax.transAxes,
+               fontsize=12, fontweight='bold')
 
-            subplot_idx += 1
+        subplot_idx += 1
 
     # Add main title
-    fig.suptitle('Sigma Pass Rate Pivot Heatmap - Parameters as Columns, Corners as Rows',
-                fontsize=14, fontweight='bold', y=0.995)
+    fig.suptitle('Sigma: Waiver Progression Trend Analysis',
+                fontsize=16, fontweight='bold', y=0.98)
 
     # Add legend at the bottom
     legend_elements = [
-        mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR ≥ 95%)'),
-        mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% ≤ PR < 95%)'),
+        mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR >= 95%)'),
+        mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% <= PR < 95%)'),
         mpatches.Patch(facecolor='#8B0000', edgecolor='black', label='Fail (PR < 90%)')
     ]
+
+    # Add description text
+    description = "Each parameter shows 3 columns: Base PR -> +Waiver1 (CI Enlarged) -> +Opt After W1 (Pessimistic Waived)\nThis shows the pass rate improvement trend as waivers are progressively opened."
+
+    fig.text(0.5, 0.01, description,
+            ha='center', va='bottom', fontsize=9, style='italic',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+
     fig.legend(handles=legend_elements, loc='lower center',
-              bbox_to_anchor=(0.5, -0.01), ncol=3, frameon=False)
+              bbox_to_anchor=(0.5, 0.04), ncol=3, frameon=True, fontsize=9)
 
     # Save figure
     png_file = os.path.join(root_path, "sigma_pass_rate_visualization.png")
-    plt.tight_layout(rect=[0, 0.02, 1, 0.99])
+    plt.tight_layout(rect=[0, 0.08, 1, 0.97])
     plt.savefig(png_file, dpi=300, bbox_inches='tight')
     plt.close()
 
-    logging.info(f"Pivot heatmap visualization saved to: {png_file}")
+    logging.info(f"Sigma waiver trend visualization saved to: {png_file}")
 
     return png_file
 
@@ -1161,11 +1189,11 @@ def main():
     logging.info("IMPORTANT NOTES:")
     logging.info("  - Table 1: Base_PR (Error-based only - rel OR abs, NO CI bounds)")
     logging.info("  - Table 2: PR_with_Waiver1 (Base + CI bounds with 6% enlargement)")
-    logging.info("  - Table 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + optimistic failures waived)")
+    logging.info("  - Table 3: PR_Optimistic_After_Waiver1 (Waiver1 passes + pessimistic failures waived)")
     logging.info("  - Visualization: Pivot heatmap with parameters as columns, corners as rows")
     logging.info("  - Color coding:")
-    logging.info("    * Light green (grey font): Pass (PR ≥ 95%)")
-    logging.info("    * Orange (black font): Marginally Pass (90% ≤ PR < 95%)")
+    logging.info("    * Light green (grey font): Pass (PR >= 95%)")
+    logging.info("    * Orange (black font): Marginally Pass (90% <= PR < 95%)")
     logging.info("    * Dark red (white font): Fail (PR < 90%)")
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 # Enhanced Moments Check Script with Unified Waiver System
 # Implements unified pass/fail system with structured waivers
-# Generates 4 pass rates: Base, +Waiver1, Optimistic Only, +Both Waivers
+# Generates 3 pass rates: Base, +Waiver1 (CI), +Optimistic After Waiver1
 
 # Set parameters
 set base_dir = "/SIM/DFDS_20211231/Personal/ynie/3-LibCharCerti/2024/N2P"
@@ -38,12 +38,13 @@ export log_dir
     echo "Starting MOMENTS CHECK WITH UNIFIED WAIVER SYSTEM at $(date)"
     echo "=========================================================="
     echo "New Features:"
-    echo "  ✓ Unified pass/fail system with structured waivers"
-    echo "  ✓ 4 pass rate types: Base, +Waiver1, Optimistic Only, +Both Waivers"
-    echo "  ✓ Optimistic vs pessimistic error analysis"
-    echo "  ✓ CI enlargement waiver (6%)"
-    echo "  ✓ Enhanced visualizations with 4-bar comparison"
-    echo "  ✓ ORIGINAL LOGIC PRESERVED - Adding waiver features on top"
+    echo "  [OK] Unified pass/fail system with structured waivers"
+    echo "  [OK] 3 pass rate types: Base, +Waiver1 (CI), +Optimistic After Waiver1"
+    echo "  [OK] Optimistic vs pessimistic error analysis"
+    echo "  [OK] CI enlargement waiver (6%)"
+    echo "  [OK] Pessimistic failures waived AFTER Waiver1"
+    echo "  [OK] Combined sigma+moments pivot heatmap visualization"
+    echo "  [OK] ORIGINAL LOGIC PRESERVED - Adding waiver features on top"
     echo "=========================================================="
     echo "Parameters set:"
     echo "Root path: $combined_data_root_path"
@@ -96,30 +97,31 @@ export log_dir
 
         # Check if waiver output files were generated
         if [ -f "$combined_data_root_path/moments_PR_table_with_waivers.csv" ]; then
-            echo "✓ moments_PR_table_with_waivers.csv generated successfully"
+            echo "[OK] moments_PR_table_with_waivers.csv generated successfully"
             echo "  File size: $(du -h "$combined_data_root_path/moments_PR_table_with_waivers.csv" | cut -f1)"
-            echo "  Preview of waiver table (4 pass rates):"
+            echo "  Preview of waiver table (3 pass rates):"
             head -5 "$combined_data_root_path/moments_PR_table_with_waivers.csv"
             echo "=========================================================="
         else
-            echo "⚠ WARNING: moments_PR_table_with_waivers.csv was not generated"
+            echo "[WARNING] moments_PR_table_with_waivers.csv was not generated"
         fi
 
         # Check for waiver summary files
         if [ -f "$combined_data_root_path/moments_waiver_summary_table.txt" ]; then
-            echo "✓ moments_waiver_summary_table.txt generated successfully"
-            echo "  This file contains 4 pass rate types for all parameters"
+            echo "[OK] moments_waiver_summary_table.txt generated successfully"
+            echo "  This file contains 3 pass rate types for all parameters"
         fi
 
-        # Check for NEW waiver visualization files
+        # Check for combined visualization
         echo ""
-        echo "Generated moments waiver visualization files:"
-        ls -la "$combined_data_root_path"/moments_*_waiver_analysis.png 2>/dev/null || echo "No moments waiver visualization files found"
-
-        # Check for error distribution charts
-        if [ -f "$combined_data_root_path/moments_error_distribution_chart.png" ]; then
-            echo "✓ moments_error_distribution_chart.png generated successfully"
-            echo "  Shows optimistic vs pessimistic error distribution for moments"
+        echo "Generated combined sigma+moments visualization:"
+        if [ -f "$combined_data_root_path/combined_sigma_moments_visualization.png" ]; then
+            echo "[OK] combined_sigma_moments_visualization.png generated successfully"
+            echo "  Combined pivot heatmap showing sigma + moments together"
+            echo "  Parameters as columns, corners as rows"
+        else
+            echo "[INFO] combined_sigma_moments_visualization.png not found"
+            echo "  This requires sigma_PR_table_with_waivers.csv to be present"
         fi
 
         # List all generated files
@@ -138,37 +140,38 @@ export log_dir
     echo ""
     echo "Summary of MOMENTS WAIVER SYSTEM outputs:"
     echo ""
-    echo "TABLES (4 Pass Rates):"
-    echo "  - moments_PR_table_with_waivers.csv: New waiver table with 4 pass rates"
+    echo "TABLES (3 Pass Rates):"
+    echo "  - moments_PR_table_with_waivers.csv: New waiver table with 3 pass rates"
     echo "  - moments_waiver_summary_table.txt: Human-readable summary"
     echo ""
-    echo "VISUALIZATIONS (ENHANCED - 4-BAR COMPARISON):"
-    echo "  - moments_meanshift_waiver_analysis.png: Meanshift 4-bar comparison"
-    echo "  - moments_std_waiver_analysis.png: Std 4-bar comparison"
-    echo "  - moments_skew_waiver_analysis.png: Skew 4-bar comparison"
-    echo "  - moments_error_distribution_chart.png: Optimistic vs pessimistic distribution"
+    echo "VISUALIZATIONS (COMBINED SIGMA+MOMENTS):"
+    echo "  - combined_sigma_moments_visualization.png: Pivot heatmap with all parameters"
+    echo "    * Parameters (Early_Sigma, Late_Sigma, Meanshift, Std, Skew) as columns"
+    echo "    * Corners as rows"
+    echo "    * Color-coded: Blue (sigma), Green (moments)"
     echo ""
     echo "ANALYSIS:"
     echo "  - *_moments_check_with_waivers.csv: Individual corner/type results with waiver columns"
     echo ""
     echo "KEY FEATURES (UNIFIED WAIVER SYSTEM):"
-    echo "  ✓ Base Pass = (rel_pass OR abs_pass) OR (estimated CI bounds pass)"
-    echo "  ✓ Waiver 1: CI enlargement (6%)"
-    echo "  ✓ Waiver 2: Optimistic error only (lib < mc)"
-    echo "  ✓ 4 pass rates: Base, +Waiver1, Optimistic Only, +Both Waivers"
-    echo "  ✓ Enhanced visualizations with 4-bar comparison"
-    echo "  ✓ ORIGINAL LOGIC PRESERVED - Waiver system added on top"
-    echo "  ✓ 1-digit precision throughout"
+    echo "  [OK] Base Pass = (rel_pass OR abs_pass) - NO CI bounds in base"
+    echo "  [OK] Waiver 1: CI enlargement (6%)"
+    echo "  [OK] Waiver 2: Focus on optimistic errors - pessimistic failures waived"
+    echo "  [OK] 3 pass rates: Base, +Waiver1 (CI), +Optimistic After Waiver1"
+    echo "  [OK] Combined sigma+moments pivot heatmap visualization"
+    echo "  [OK] Integrates with sigma_PR_table_with_waivers.csv"
+    echo "  [OK] ORIGINAL LOGIC PRESERVED - Waiver system added on top"
+    echo "  [OK] 1-digit precision throughout"
     echo ""
     echo "Thresholds (preserved from original):"
-    echo "  - Delay: Meanshift≤1%, Std≤2%, Skew≤5%, abs≤max(0.005×slew, 1ps)"
-    echo "  - Slew: Meanshift≤2%, Std≤4%, Skew≤10%, abs≤max(0.005×slew, 2ps)"
+    echo "  - Delay: Meanshift<=1%, Std<=2%, Skew<=5%, abs<=max(0.005*slew, 1ps)"
+    echo "  - Slew: Meanshift<=2%, Std<=4%, Skew<=10%, abs<=max(0.005*slew, 2ps)"
     echo ""
     echo "Next steps:"
-    echo "  1. Review moments waiver analysis visualizations (4-bar comparison)"
-    echo "  2. Analyze optimistic vs pessimistic error patterns"
-    echo "  3. Use moments_PR_table_with_waivers.csv for advanced analysis"
-    echo "  4. Compare with sigma waiver results for complete certification view"
+    echo "  1. Review combined_sigma_moments_visualization.png (unified view)"
+    echo "  2. Analyze pessimistic failures (waived in final PR)"
+    echo "  3. Use moments_PR_table_with_waivers.csv for detailed analysis"
+    echo "  4. Ensure sigma script ran first for combined visualization"
     echo "=========================================================="
 } 2>&1 | tee "$main_log"
 
