@@ -42,9 +42,12 @@ Thresholds (preserved from original):
 
 Integration with Sigma:
 - Reads sigma_PR_table_with_waivers.csv (3-table format)
-- Combines sigma and moments results in visualization
+- Combines sigma and moments results in visualization and summary table
 
-Output: moments_PR_table_with_waivers.csv
+Outputs:
+- moments_PR_table_with_waivers.csv (moments only, 3 pass rates)
+- combined_sigma_moments_PR_summary.csv (combined summary table)
+- combined_sigma_moments_visualization.png (combined pivot heatmap)
 """
 
 def setup_logging(input_file):
@@ -994,6 +997,132 @@ def generate_combined_pass_rate_visualization(moments_results, sigma_results, ro
 
     return png_file
 
+def generate_combined_summary_table(moments_results, sigma_results, root_path):
+    """
+    Generate a combined summary CSV table with both sigma and moments PR with waivers.
+
+    Format:
+    - One row per corner-type combination
+    - Columns: Corner, Type, then for each parameter (Early_Sigma, Late_Sigma, Meanshift, Std, Skew):
+      * {Param}_Base_PR, {Param}_W1_PR, {Param}_Opt_PR
+
+    Args:
+        moments_results: Dictionary with moments waiver results
+        sigma_results: Dictionary with sigma PR table results
+        root_path: Output directory path
+
+    Returns:
+        Path to the generated CSV file
+    """
+    logging.info("Generating combined sigma+moments summary table")
+
+    def extract_corner_from_filename(file_name):
+        """Extract corner name from filename"""
+        import re
+        corner_pattern = r'(ssg[ng][pg]_[0-9]p[0-9]+v_[mn][0-9]+c)'
+        match = re.search(corner_pattern, file_name)
+        if match:
+            return match.group(1)
+        # Fallback
+        base_name = file_name.replace('.rpt', '').replace('MC_', '').replace('fmc_', '')
+        return base_name.split('_')[0] if base_name else 'unknown'
+
+    # Organize data by corner and type
+    combined_data = {}  # {(corner, type): {param: {base_pr, pr_waiver1, pr_opt_after_w1}}}
+
+    # Add moments data
+    for (file_name, type_name), param_data in moments_results.items():
+        corner = extract_corner_from_filename(file_name)
+        key = (corner, type_name)
+
+        if key not in combined_data:
+            combined_data[key] = {}
+
+        for param in ['Meanshift', 'Std', 'Skew']:
+            if param in param_data:
+                stats = param_data[param]
+                combined_data[key][param] = {
+                    'base_pr': stats['base_pr'],
+                    'pr_waiver1': stats['pr_with_waiver1'],
+                    'pr_opt_after_w1': stats['pr_optimistic_after_waiver1']
+                }
+
+    # Add sigma data from the parsed sigma table
+    for key, pr_value in sigma_results.items():
+        if len(key) == 4:  # (corner, type, metric, param)
+            corner, type_name, metric, param = key
+
+            combo_key = (corner, type_name)
+
+            if combo_key not in combined_data:
+                combined_data[combo_key] = {}
+
+            if param not in combined_data[combo_key]:
+                combined_data[combo_key][param] = {}
+
+            # Map metric names
+            metric_map = {
+                'base_pr': 'base_pr',
+                'pr_with_waiver1': 'pr_waiver1',
+                'pr_opt_after_w1': 'pr_opt_after_w1'
+            }
+
+            if metric in metric_map:
+                combined_data[combo_key][param][metric_map[metric]] = pr_value
+
+    if not combined_data:
+        logging.warning("No combined data available for summary table")
+        return None
+
+    # Define all parameters in order
+    all_params = ['Early_Sigma', 'Late_Sigma', 'Meanshift', 'Std', 'Skew']
+
+    # Build CSV content
+    csv_lines = []
+
+    # Header row
+    header = ['Corner', 'Type']
+    for param in all_params:
+        header.extend([
+            f'{param}_Base_PR',
+            f'{param}_W1_PR',
+            f'{param}_Opt_PR'
+        ])
+    csv_lines.append(','.join(header))
+
+    # Data rows - sort by type then corner
+    sorted_keys = sorted(combined_data.keys(), key=lambda x: (x[1], x[0]))
+
+    for (corner, type_name) in sorted_keys:
+        row = [corner, type_name]
+
+        for param in all_params:
+            if param in combined_data[(corner, type_name)]:
+                param_data = combined_data[(corner, type_name)][param]
+                base_pr = param_data.get('base_pr', None)
+                w1_pr = param_data.get('pr_waiver1', None)
+                opt_pr = param_data.get('pr_opt_after_w1', None)
+
+                row.append(f'{base_pr:.2f}' if base_pr is not None else 'N/A')
+                row.append(f'{w1_pr:.2f}' if w1_pr is not None else 'N/A')
+                row.append(f'{opt_pr:.2f}' if opt_pr is not None else 'N/A')
+            else:
+                row.extend(['N/A', 'N/A', 'N/A'])
+
+        csv_lines.append(','.join(row))
+
+    # Write to file
+    csv_file = os.path.join(root_path, "combined_sigma_moments_PR_summary.csv")
+
+    with open(csv_file, 'w') as f:
+        f.write('\n'.join(csv_lines))
+
+    logging.info(f"Combined summary table saved to: {csv_file}")
+    logging.info(f"  Total rows: {len(csv_lines) - 1} (excluding header)")
+    logging.info(f"  Parameters included: {', '.join(all_params)}")
+
+    return csv_file
+
 def main():
     # Set up a main log file
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1103,14 +1232,21 @@ def main():
         logging.info(f"Moments waiver summary table saved to: {summary_file}")
         logging.info(f"Moments waiver CSV saved to: {csv_file}")
 
-        # Generate combined sigma+moments visualization
+        # Generate combined sigma+moments outputs
         if sigma_waiver_results:
-            logging.info("Generating combined sigma+moments visualization")
+            logging.info("Generating combined sigma+moments outputs")
+
+            # Combined visualization
             viz_file = generate_combined_pass_rate_visualization(moments_waiver_results, sigma_waiver_results, root_path)
             if viz_file:
                 logging.info(f"Combined visualization saved to: {viz_file}")
+
+            # Combined summary table
+            combined_csv = generate_combined_summary_table(moments_waiver_results, sigma_waiver_results, root_path)
+            if combined_csv:
+                logging.info(f"Combined summary CSV saved to: {combined_csv}")
         else:
-            logging.warning("Sigma results not available - skipping combined visualization")
+            logging.warning("Sigma results not available - skipping combined outputs")
 
         # Print summary to console
         with open(summary_file, 'r') as f:
@@ -1125,10 +1261,12 @@ def main():
         print("   CI enlargement waiver (6%)")
         print("   Optimistic waiver AFTER Waiver1")
         print("   Combined sigma+moments visualization (pivot heatmap)")
+        print("   Combined sigma+moments summary table (CSV)")
         print("   ORIGINAL PASS/FAIL LOGIC PRESERVED")
         print("="*50)
         if sigma_waiver_results:
             print(f"Combined visualization: combined_sigma_moments_visualization.png")
+            print(f"Combined summary CSV: combined_sigma_moments_PR_summary.csv")
             print("="*50)
     else:
         logging.warning("Could not generate moments waiver summary table - no valid results")
@@ -1139,6 +1277,7 @@ def main():
     logging.info("  - moments_PR_table_with_waivers.csv (3 pass rates)")
     logging.info("  - moments_waiver_summary_table.txt (human-readable summary)")
     logging.info("  - combined_sigma_moments_visualization.png (pivot heatmap)")
+    logging.info("  - combined_sigma_moments_PR_summary.csv (combined summary table)")
     logging.info("  - *_moments_check_with_waivers.csv (individual corner/type results)")
     logging.info("")
     logging.info("IMPORTANT NOTES:")
