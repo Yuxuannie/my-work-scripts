@@ -48,21 +48,17 @@ Output: moments_PR_table_with_waivers.csv
 """
 
 def setup_logging(input_file):
-    """Set up logging configuration"""
-    input_name = os.path.basename(input_file)
-    log_file = os.path.join(os.path.dirname(input_file), f"{input_name}.log")
-
+    """Set up logging configuration - console output only"""
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file),
             logging.StreamHandler()
         ]
     )
 
-    logging.info(f"Log file created at: {log_file}")
-    return log_file
+    logging.info(f"Processing file: {os.path.basename(input_file)}")
+    return None
 
 def check_pass_with_waivers_moments(row, type_name, param_name, mc_prefix='MC', lib_prefix='Lib'):
     """
@@ -775,17 +771,19 @@ def generate_moments_waiver_summary_table(results, root_path):
 def generate_combined_pass_rate_visualization(moments_results, sigma_results, root_path):
     """
     Generate a combined pivot-style heatmap PNG visualization with sigma + moments:
-    - Parameters (Early_Sigma, Late_Sigma, Meanshift, Std, Skew) as column headers
+    - Parameters (Early_Sigma, Late_Sigma, Meanshift, Std, Skew) as column groups
+    - Each parameter has 3 sub-columns: Base PR, +Waiver1, +Opt After W1
     - Corners as row headers
-    - 3 sections: Base_PR, PR_with_Waiver1, PR_Optimistic_After_Waiver1
+    - Shows waiver improvement trend clearly within each parameter
     - All in ONE PNG file
 
     Color coding:
     - PR >= 95%: Light green background, grey font (Pass)
     - 90% <= PR < 95%: Orange background, black font (Marginally Pass)
     - PR < 90%: Dark red background, white font (Fail)
+    - Improvement cells highlighted with lighter shades
     """
-    logging.info("Generating combined sigma+moments pivot heatmap visualization")
+    logging.info("Generating combined sigma+moments waiver trend visualization")
 
     def get_cell_color(pr_value):
         """Return background and font colors based on pass rate value"""
@@ -856,7 +854,7 @@ def generate_combined_pass_rate_visualization(moments_results, sigma_results, ro
 
     # Create figure with subplots for each type
     num_types = sum(1 for v in data_by_type.values() if v)
-    fig = plt.figure(figsize=(18, 4 * num_types + 2))
+    fig = plt.figure(figsize=(24, 5 * num_types))
 
     subplot_idx = 1
 
@@ -870,101 +868,129 @@ def generate_combined_pass_rate_visualization(moments_results, sigma_results, ro
         # Combined parameters: sigma first, then moments
         params = ['Early_Sigma', 'Late_Sigma', 'Meanshift', 'Std', 'Skew']
 
-        # Create 3 subtables for this type (Base, Waiver1, Opt_After_W1)
-        for metric_idx, (metric_name, metric_key) in enumerate([
-            ('Base PR (Error-based)', 'base_pr'),
-            ('PR with Waiver1 (+CI Enlarged)', 'pr_waiver1'),
-            ('PR Opt After Waiver1 (+Opt Waived)', 'pr_opt_after_w1')
-        ]):
-            ax = plt.subplot(num_types * 3, 1, subplot_idx)
-            ax.axis('tight')
-            ax.axis('off')
+        # Create ONE table per type showing all 3 pass rates side-by-side
+        ax = plt.subplot(num_types, 1, subplot_idx)
+        ax.axis('tight')
+        ax.axis('off')
 
-            # Prepare table data
-            headers = ['Corner'] + params
-            table_data = []
+        # Build headers: Corner | Param1_Base | Param1_W1 | Param1_Opt | Param2_Base | ...
+        headers = ['Corner']
+        col_span_info = []  # Track which columns belong to which parameter
 
-            for corner in corners:
-                row = [corner]
-                for param in params:
-                    if param in type_data[corner] and metric_key in type_data[corner][param]:
-                        pr_value = type_data[corner][param][metric_key]
-                        row.append(f"{pr_value:.1f}%")
-                    else:
-                        row.append("N/A")
-                table_data.append(row)
+        for param in params:
+            headers.extend([f'{param}\nBase', f'{param}\n+W1', f'{param}\n+Opt'])
+            col_span_info.append((param, len(headers) - 3, len(headers) - 1))
 
-            # Create table
-            table = ax.table(cellText=table_data, colLabels=headers,
-                           cellLoc='center', loc='center',
-                           bbox=[0, 0, 1, 1])
+        # Prepare table data
+        table_data = []
 
-            table.auto_set_font_size(False)
-            table.set_fontsize(8)
+        for corner in corners:
+            row = [corner]
+            for param in params:
+                # Get all 3 pass rates for this parameter
+                base_pr = type_data[corner].get(param, {}).get('base_pr', None)
+                w1_pr = type_data[corner].get(param, {}).get('pr_waiver1', None)
+                opt_pr = type_data[corner].get(param, {}).get('pr_opt_after_w1', None)
 
-            # Style header row
-            for i in range(len(headers)):
-                cell = table[(0, i)]
-                # Different colors for sigma vs moments headers
-                if i == 0:  # Corner column
-                    cell.set_facecolor('#4472C4')
-                elif headers[i] in ['Early_Sigma', 'Late_Sigma']:  # Sigma columns
-                    cell.set_facecolor('#5B9BD5')
-                else:  # Moments columns
-                    cell.set_facecolor('#70AD47')
-                cell.set_text_props(weight='bold', color='white')
-                cell.set_height(0.1)
+                # Add to row
+                row.append(f"{base_pr:.1f}" if base_pr is not None else "N/A")
+                row.append(f"{w1_pr:.1f}" if w1_pr is not None else "N/A")
+                row.append(f"{opt_pr:.1f}" if opt_pr is not None else "N/A")
 
-            # Apply color coding to data cells
-            for i, corner in enumerate(corners, start=1):
-                # Style corner column (first column)
-                cell = table[(i, 0)]
-                cell.set_facecolor('#F0F0F0')
-                cell.set_text_props(color='black', weight='bold')
-                cell.set_height(0.08)
+            table_data.append(row)
 
-                # Apply color coding to parameter columns
-                for j, param in enumerate(params, start=1):
-                    cell = table[(i, j)]
-                    if param in type_data[corner] and metric_key in type_data[corner][param]:
-                        pr_value = type_data[corner][param][metric_key]
+        # Create table
+        table = ax.table(cellText=table_data, colLabels=headers,
+                       cellLoc='center', loc='center',
+                       bbox=[0, 0, 1, 1])
+
+        table.auto_set_font_size(False)
+        table.set_fontsize(7)
+
+        # Style header row with grouped parameter colors
+        for i, header in enumerate(headers):
+            cell = table[(0, i)]
+            if i == 0:  # Corner column
+                cell.set_facecolor('#4472C4')
+                cell.set_text_props(weight='bold', color='white', fontsize=8)
+            else:
+                # Determine which parameter this column belongs to
+                param_idx = (i - 1) // 3
+                param_name = params[param_idx]
+
+                # Different colors for sigma vs moments
+                if param_name in ['Early_Sigma', 'Late_Sigma']:
+                    cell.set_facecolor('#5B9BD5')  # Blue for sigma
+                else:
+                    cell.set_facecolor('#70AD47')  # Green for moments
+
+                cell.set_text_props(weight='bold', color='white', fontsize=7)
+            cell.set_height(0.12)
+
+        # Apply color coding to data cells
+        for i, corner in enumerate(corners, start=1):
+            # Style corner column
+            cell = table[(i, 0)]
+            cell.set_facecolor('#F0F0F0')
+            cell.set_text_props(color='black', weight='bold', fontsize=7)
+            cell.set_height(0.1)
+
+            # Apply color coding to PR value columns
+            for j in range(1, len(headers)):
+                cell = table[(i, j)]
+                cell_value = table_data[i-1][j]
+
+                if cell_value != "N/A":
+                    try:
+                        pr_value = float(cell_value)
                         bg_color, font_color = get_cell_color(pr_value)
                         cell.set_facecolor(bg_color)
-                        cell.set_text_props(color=font_color, weight='bold')
-                    else:
+                        cell.set_text_props(color=font_color, weight='bold', fontsize=7)
+                    except ValueError:
                         cell.set_facecolor('#CCCCCC')
-                        cell.set_text_props(color='black')
-                    cell.set_height(0.08)
+                        cell.set_text_props(color='black', fontsize=7)
+                else:
+                    cell.set_facecolor('#CCCCCC')
+                    cell.set_text_props(color='black', fontsize=7)
+                cell.set_height(0.1)
 
-            # Add subtitle for this table
-            ax.text(0.5, 1.15, f'{type_name.upper()} - {metric_name}',
-                   ha='center', va='top', transform=ax.transAxes,
-                   fontsize=11, fontweight='bold')
+        # Add title for this table
+        ax.text(0.5, 1.05, f'{type_name.upper()} - Pass Rate Waiver Progression (Base -> +Waiver1 -> +Opt After W1)',
+               ha='center', va='top', transform=ax.transAxes,
+               fontsize=12, fontweight='bold')
 
-            subplot_idx += 1
+        subplot_idx += 1
 
     # Add main title
-    fig.suptitle('Combined Sigma + Moments Pass Rate Pivot Heatmap',
-                fontsize=14, fontweight='bold', y=0.995)
+    fig.suptitle('Combined Sigma + Moments: Waiver Progression Trend Analysis',
+                fontsize=16, fontweight='bold', y=0.98)
 
     # Add legend at the bottom
     legend_elements = [
         mpatches.Patch(facecolor='#90EE90', edgecolor='black', label='Pass (PR >= 95%)'),
         mpatches.Patch(facecolor='#FFA500', edgecolor='black', label='Marginally Pass (90% <= PR < 95%)'),
         mpatches.Patch(facecolor='#8B0000', edgecolor='black', label='Fail (PR < 90%)'),
-        mpatches.Patch(facecolor='#5B9BD5', edgecolor='black', label='Sigma Parameters'),
-        mpatches.Patch(facecolor='#70AD47', edgecolor='black', label='Moments Parameters')
+        mpatches.Patch(facecolor='#5B9BD5', edgecolor='black', label='Sigma Parameters (Blue)'),
+        mpatches.Patch(facecolor='#70AD47', edgecolor='black', label='Moments Parameters (Green)')
     ]
+
+    # Add description text
+    description = "Each parameter shows 3 columns: Base PR -> +Waiver1 (CI Enlarged) -> +Opt After W1 (Pessimistic Waived)\nThis shows the pass rate improvement trend as waivers are progressively opened."
+
+    fig.text(0.5, 0.01, description,
+            ha='center', va='bottom', fontsize=9, style='italic',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+
     fig.legend(handles=legend_elements, loc='lower center',
-              bbox_to_anchor=(0.5, -0.01), ncol=5, frameon=False)
+              bbox_to_anchor=(0.5, 0.04), ncol=5, frameon=True, fontsize=9)
 
     # Save figure
     png_file = os.path.join(root_path, "combined_sigma_moments_visualization.png")
-    plt.tight_layout(rect=[0, 0.02, 1, 0.99])
+    plt.tight_layout(rect=[0, 0.08, 1, 0.97])
     plt.savefig(png_file, dpi=300, bbox_inches='tight')
     plt.close()
 
-    logging.info(f"Combined pivot heatmap visualization saved to: {png_file}")
+    logging.info(f"Combined waiver trend visualization saved to: {png_file}")
 
     return png_file
 
