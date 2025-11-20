@@ -870,9 +870,9 @@ def generate_pass_rate_visualization(results, root_path):
         logging.warning("No data available for visualization")
         return None
 
-    # Create figure with subplots for each type
+    # Create figure with subplots - 3 tables per type (Base, Waiver1, Waiver2)
     num_types = sum(1 for v in data_by_type.values() if v)
-    fig = plt.figure(figsize=(18, 5 * num_types))
+    fig = plt.figure(figsize=(16, 4 * num_types * 3))
 
     subplot_idx = 1
 
@@ -886,94 +886,88 @@ def generate_pass_rate_visualization(results, root_path):
         # Determine which parameters are available for this type
         params = ['Early_Sigma', 'Late_Sigma'] if type_name in ['delay', 'slew'] else ['Late_Sigma']
 
-        # Create ONE table per type showing all 3 pass rates side-by-side
-        ax = plt.subplot(num_types, 1, subplot_idx)
-        ax.axis('tight')
-        ax.axis('off')
+        # Create 3 tables for this type: Base_PR, Waiver1_PR, Waiver2_PR
+        for waiver_stage, (stage_name, metric_key) in enumerate([
+            ('Base PR (Error-based Only)', 'base_pr'),
+            ('Waiver 1 ON (CI Enlarged +/-6%)', 'pr_waiver1'),
+            ('Waiver 2 ON (Pessimistic Waived)', 'pr_opt_after_w1')
+        ]):
+            ax = plt.subplot(num_types * 3, 1, subplot_idx)
+            ax.axis('tight')
+            ax.axis('off')
 
-        # Build headers: Corner | Param1_Base | Param1_W1 | Param1_Opt | Param2_Base | ...
-        headers = ['Corner']
+            # Build headers: Corner | All parameters
+            headers = ['Corner'] + params
 
-        for param in params:
-            headers.extend([f'{param}\nBase', f'{param}\n+W1', f'{param}\n+Opt'])
+            # Prepare table data
+            table_data = []
 
-        # Prepare table data
-        table_data = []
+            for corner in corners:
+                row = [corner]
+                for param in params:
+                    if param in type_data[corner]:
+                        pr_value = type_data[corner][param][metric_key]
+                        row.append(f"{pr_value:.1f}")
+                    else:
+                        row.append("N/A")
+                table_data.append(row)
 
-        for corner in corners:
-            row = [corner]
-            for param in params:
-                # Get all 3 pass rates for this parameter
-                if param in type_data[corner]:
-                    base_pr = type_data[corner][param]['base_pr']
-                    w1_pr = type_data[corner][param]['pr_waiver1']
-                    opt_pr = type_data[corner][param]['pr_opt_after_w1']
+            # Create table
+            table = ax.table(cellText=table_data, colLabels=headers,
+                           cellLoc='center', loc='center',
+                           bbox=[0, 0, 1, 1])
 
-                    row.append(f"{base_pr:.1f}")
-                    row.append(f"{w1_pr:.1f}")
-                    row.append(f"{opt_pr:.1f}")
+            table.auto_set_font_size(False)
+            table.set_fontsize(9)
+
+            # Style header row
+            for i, header in enumerate(headers):
+                cell = table[(0, i)]
+                if i == 0:  # Corner column
+                    cell.set_facecolor('#4472C4')
                 else:
-                    row.extend(["N/A", "N/A", "N/A"])
+                    # All sigma parameters get blue color
+                    cell.set_facecolor('#5B9BD5')
+                cell.set_text_props(weight='bold', color='white', fontsize=9)
+                cell.set_height(0.12)
 
-            table_data.append(row)
-
-        # Create table
-        table = ax.table(cellText=table_data, colLabels=headers,
-                       cellLoc='center', loc='center',
-                       bbox=[0, 0, 1, 1])
-
-        table.auto_set_font_size(False)
-        table.set_fontsize(8)
-
-        # Style header row
-        for i, header in enumerate(headers):
-            cell = table[(0, i)]
-            if i == 0:  # Corner column
-                cell.set_facecolor('#4472C4')
-            else:
-                # All sigma parameters get blue color
-                cell.set_facecolor('#5B9BD5')
-
-            cell.set_text_props(weight='bold', color='white', fontsize=8)
-            cell.set_height(0.12)
-
-        # Apply color coding to data cells
-        for i, corner in enumerate(corners, start=1):
-            # Style corner column
-            cell = table[(i, 0)]
-            cell.set_facecolor('#F0F0F0')
-            cell.set_text_props(color='black', weight='bold', fontsize=8)
-            cell.set_height(0.1)
-
-            # Apply color coding to PR value columns
-            for j in range(1, len(headers)):
-                cell = table[(i, j)]
-                cell_value = table_data[i-1][j]
-
-                if cell_value != "N/A":
-                    try:
-                        pr_value = float(cell_value)
-                        bg_color, font_color = get_cell_color(pr_value)
-                        cell.set_facecolor(bg_color)
-                        cell.set_text_props(color=font_color, weight='bold', fontsize=8)
-                    except ValueError:
-                        cell.set_facecolor('#CCCCCC')
-                        cell.set_text_props(color='black', fontsize=8)
-                else:
-                    cell.set_facecolor('#CCCCCC')
-                    cell.set_text_props(color='black', fontsize=8)
+            # Apply color coding to data cells
+            for i, corner in enumerate(corners, start=1):
+                # Style corner column
+                cell = table[(i, 0)]
+                cell.set_facecolor('#F0F0F0')
+                cell.set_text_props(color='black', weight='bold', fontsize=9)
                 cell.set_height(0.1)
 
-        # Add title for this table
-        ax.text(0.5, 1.05, f'{type_name.upper()} - Pass Rate Waiver Progression (Base -> +Waiver1 -> +Opt After W1)',
-               ha='center', va='top', transform=ax.transAxes,
-               fontsize=12, fontweight='bold')
+                # Apply color coding to parameter columns
+                for j in range(1, len(headers)):
+                    cell = table[(i, j)]
+                    cell_value = table_data[i-1][j]
 
-        subplot_idx += 1
+                    if cell_value != "N/A":
+                        try:
+                            pr_value = float(cell_value)
+                            bg_color, font_color = get_cell_color(pr_value)
+                            cell.set_facecolor(bg_color)
+                            cell.set_text_props(color=font_color, weight='bold', fontsize=9)
+                        except ValueError:
+                            cell.set_facecolor('#CCCCCC')
+                            cell.set_text_props(color='black', fontsize=9)
+                    else:
+                        cell.set_facecolor('#CCCCCC')
+                        cell.set_text_props(color='black', fontsize=9)
+                    cell.set_height(0.1)
+
+            # Add title for this table
+            ax.text(0.5, 1.08, f'{type_name.upper()} - {stage_name}',
+                   ha='center', va='top', transform=ax.transAxes,
+                   fontsize=11, fontweight='bold')
+
+            subplot_idx += 1
 
     # Add main title
-    fig.suptitle('Sigma: Waiver Progression Trend Analysis',
-                fontsize=16, fontweight='bold', y=0.98)
+    fig.suptitle('Sigma: Grouped by Waiver Stages',
+                fontsize=16, fontweight='bold', y=0.995)
 
     # Add legend at the bottom
     legend_elements = [
@@ -983,14 +977,14 @@ def generate_pass_rate_visualization(results, root_path):
     ]
 
     # Add description text
-    description = "Each parameter shows 3 columns: Base PR -> +Waiver1 (CI Enlarged) -> +Opt After W1 (Pessimistic Waived)\nThis shows the pass rate improvement trend as waivers are progressively opened."
+    description = "Tables grouped by waiver stages: Base PR (no waivers) -> Waiver 1 ON (CI enlarged) -> Waiver 2 ON (pessimistic waived)\nEach table shows all parameters to easily compare performance at each waiver stage."
 
-    fig.text(0.5, 0.01, description,
+    fig.text(0.5, 0.005, description,
             ha='center', va='bottom', fontsize=9, style='italic',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
 
     fig.legend(handles=legend_elements, loc='lower center',
-              bbox_to_anchor=(0.5, 0.04), ncol=3, frameon=True, fontsize=9)
+              bbox_to_anchor=(0.5, 0.02), ncol=3, frameon=True, fontsize=9)
 
     # Save figure
     png_file = os.path.join(root_path, "sigma_pass_rate_visualization.png")

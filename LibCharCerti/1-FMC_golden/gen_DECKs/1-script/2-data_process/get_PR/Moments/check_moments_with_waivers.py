@@ -42,9 +42,12 @@ Thresholds (preserved from original):
 
 Integration with Sigma:
 - Reads sigma_PR_table_with_waivers.csv (3-table format)
-- Combines sigma and moments results in visualization
+- Combines sigma and moments results in visualization and summary table
 
-Output: moments_PR_table_with_waivers.csv
+Outputs:
+- moments_PR_table_with_waivers.csv (moments only, 3 pass rates)
+- combined_sigma_moments_PR_summary.csv (combined summary table)
+- combined_sigma_moments_visualization.png (combined pivot heatmap)
 """
 
 def setup_logging(input_file):
@@ -852,9 +855,9 @@ def generate_combined_pass_rate_visualization(moments_results, sigma_results, ro
         logging.warning("No data available for combined visualization")
         return None
 
-    # Create figure with subplots for each type
+    # Create figure with subplots - 3 tables per type (Base, Waiver1, Waiver2)
     num_types = sum(1 for v in data_by_type.values() if v)
-    fig = plt.figure(figsize=(24, 5 * num_types))
+    fig = plt.figure(figsize=(20, 4 * num_types * 3))
 
     subplot_idx = 1
 
@@ -868,102 +871,88 @@ def generate_combined_pass_rate_visualization(moments_results, sigma_results, ro
         # Combined parameters: sigma first, then moments
         params = ['Early_Sigma', 'Late_Sigma', 'Meanshift', 'Std', 'Skew']
 
-        # Create ONE table per type showing all 3 pass rates side-by-side
-        ax = plt.subplot(num_types, 1, subplot_idx)
-        ax.axis('tight')
-        ax.axis('off')
+        # Create 3 tables for this type: Base_PR, Waiver1_PR, Waiver2_PR
+        for waiver_stage, (stage_name, metric_key) in enumerate([
+            ('Base PR (Error-based Only)', 'base_pr'),
+            ('Waiver 1 ON (CI Enlarged +/-6%)', 'pr_waiver1'),
+            ('Waiver 2 ON (Pessimistic Waived)', 'pr_opt_after_w1')
+        ]):
+            ax = plt.subplot(num_types * 3, 1, subplot_idx)
+            ax.axis('tight')
+            ax.axis('off')
 
-        # Build headers: Corner | Param1_Base | Param1_W1 | Param1_Opt | Param2_Base | ...
-        headers = ['Corner']
-        col_span_info = []  # Track which columns belong to which parameter
+            # Build headers: Corner | All parameters
+            headers = ['Corner'] + params
 
-        for param in params:
-            headers.extend([f'{param}\nBase', f'{param}\n+W1', f'{param}\n+Opt'])
-            col_span_info.append((param, len(headers) - 3, len(headers) - 1))
+            # Prepare table data
+            table_data = []
 
-        # Prepare table data
-        table_data = []
+            for corner in corners:
+                row = [corner]
+                for param in params:
+                    pr_value = type_data[corner].get(param, {}).get(metric_key, None)
+                    row.append(f"{pr_value:.1f}" if pr_value is not None else "N/A")
+                table_data.append(row)
 
-        for corner in corners:
-            row = [corner]
-            for param in params:
-                # Get all 3 pass rates for this parameter
-                base_pr = type_data[corner].get(param, {}).get('base_pr', None)
-                w1_pr = type_data[corner].get(param, {}).get('pr_waiver1', None)
-                opt_pr = type_data[corner].get(param, {}).get('pr_opt_after_w1', None)
+            # Create table
+            table = ax.table(cellText=table_data, colLabels=headers,
+                           cellLoc='center', loc='center',
+                           bbox=[0, 0, 1, 1])
 
-                # Add to row
-                row.append(f"{base_pr:.1f}" if base_pr is not None else "N/A")
-                row.append(f"{w1_pr:.1f}" if w1_pr is not None else "N/A")
-                row.append(f"{opt_pr:.1f}" if opt_pr is not None else "N/A")
+            table.auto_set_font_size(False)
+            table.set_fontsize(8)
 
-            table_data.append(row)
-
-        # Create table
-        table = ax.table(cellText=table_data, colLabels=headers,
-                       cellLoc='center', loc='center',
-                       bbox=[0, 0, 1, 1])
-
-        table.auto_set_font_size(False)
-        table.set_fontsize(7)
-
-        # Style header row with grouped parameter colors
-        for i, header in enumerate(headers):
-            cell = table[(0, i)]
-            if i == 0:  # Corner column
-                cell.set_facecolor('#4472C4')
-                cell.set_text_props(weight='bold', color='white', fontsize=8)
-            else:
-                # Determine which parameter this column belongs to
-                param_idx = (i - 1) // 3
-                param_name = params[param_idx]
-
-                # Different colors for sigma vs moments
-                if param_name in ['Early_Sigma', 'Late_Sigma']:
-                    cell.set_facecolor('#5B9BD5')  # Blue for sigma
+            # Style header row
+            for i, header in enumerate(headers):
+                cell = table[(0, i)]
+                if i == 0:  # Corner column
+                    cell.set_facecolor('#4472C4')
                 else:
-                    cell.set_facecolor('#70AD47')  # Green for moments
+                    # Different colors for sigma vs moments
+                    if header in ['Early_Sigma', 'Late_Sigma']:
+                        cell.set_facecolor('#5B9BD5')  # Blue for sigma
+                    else:
+                        cell.set_facecolor('#70AD47')  # Green for moments
+                cell.set_text_props(weight='bold', color='white', fontsize=9)
+                cell.set_height(0.12)
 
-                cell.set_text_props(weight='bold', color='white', fontsize=7)
-            cell.set_height(0.12)
-
-        # Apply color coding to data cells
-        for i, corner in enumerate(corners, start=1):
-            # Style corner column
-            cell = table[(i, 0)]
-            cell.set_facecolor('#F0F0F0')
-            cell.set_text_props(color='black', weight='bold', fontsize=7)
-            cell.set_height(0.1)
-
-            # Apply color coding to PR value columns
-            for j in range(1, len(headers)):
-                cell = table[(i, j)]
-                cell_value = table_data[i-1][j]
-
-                if cell_value != "N/A":
-                    try:
-                        pr_value = float(cell_value)
-                        bg_color, font_color = get_cell_color(pr_value)
-                        cell.set_facecolor(bg_color)
-                        cell.set_text_props(color=font_color, weight='bold', fontsize=7)
-                    except ValueError:
-                        cell.set_facecolor('#CCCCCC')
-                        cell.set_text_props(color='black', fontsize=7)
-                else:
-                    cell.set_facecolor('#CCCCCC')
-                    cell.set_text_props(color='black', fontsize=7)
+            # Apply color coding to data cells
+            for i, corner in enumerate(corners, start=1):
+                # Style corner column
+                cell = table[(i, 0)]
+                cell.set_facecolor('#F0F0F0')
+                cell.set_text_props(color='black', weight='bold', fontsize=8)
                 cell.set_height(0.1)
 
-        # Add title for this table
-        ax.text(0.5, 1.05, f'{type_name.upper()} - Pass Rate Waiver Progression (Base -> +Waiver1 -> +Opt After W1)',
-               ha='center', va='top', transform=ax.transAxes,
-               fontsize=12, fontweight='bold')
+                # Apply color coding to parameter columns
+                for j in range(1, len(headers)):
+                    cell = table[(i, j)]
+                    cell_value = table_data[i-1][j]
 
-        subplot_idx += 1
+                    if cell_value != "N/A":
+                        try:
+                            pr_value = float(cell_value)
+                            bg_color, font_color = get_cell_color(pr_value)
+                            cell.set_facecolor(bg_color)
+                            cell.set_text_props(color=font_color, weight='bold', fontsize=8)
+                        except ValueError:
+                            cell.set_facecolor('#CCCCCC')
+                            cell.set_text_props(color='black', fontsize=8)
+                    else:
+                        cell.set_facecolor('#CCCCCC')
+                        cell.set_text_props(color='black', fontsize=8)
+                    cell.set_height(0.1)
+
+            # Add title for this table
+            ax.text(0.5, 1.08, f'{type_name.upper()} - {stage_name}',
+                   ha='center', va='top', transform=ax.transAxes,
+                   fontsize=11, fontweight='bold')
+
+            subplot_idx += 1
 
     # Add main title
-    fig.suptitle('Combined Sigma + Moments: Waiver Progression Trend Analysis',
-                fontsize=16, fontweight='bold', y=0.98)
+    fig.suptitle('Combined Sigma + Moments: Grouped by Waiver Stages',
+                fontsize=16, fontweight='bold', y=0.995)
 
     # Add legend at the bottom
     legend_elements = [
@@ -975,14 +964,14 @@ def generate_combined_pass_rate_visualization(moments_results, sigma_results, ro
     ]
 
     # Add description text
-    description = "Each parameter shows 3 columns: Base PR -> +Waiver1 (CI Enlarged) -> +Opt After W1 (Pessimistic Waived)\nThis shows the pass rate improvement trend as waivers are progressively opened."
+    description = "Tables grouped by waiver stages: Base PR (no waivers) -> Waiver 1 ON (CI enlarged) -> Waiver 2 ON (pessimistic waived)\nEach table shows all parameters to easily compare performance at each waiver stage."
 
-    fig.text(0.5, 0.01, description,
+    fig.text(0.5, 0.005, description,
             ha='center', va='bottom', fontsize=9, style='italic',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
 
     fig.legend(handles=legend_elements, loc='lower center',
-              bbox_to_anchor=(0.5, 0.04), ncol=5, frameon=True, fontsize=9)
+              bbox_to_anchor=(0.5, 0.02), ncol=5, frameon=True, fontsize=9)
 
     # Save figure
     png_file = os.path.join(root_path, "combined_sigma_moments_visualization.png")
@@ -993,6 +982,150 @@ def generate_combined_pass_rate_visualization(moments_results, sigma_results, ro
     logging.info(f"Combined waiver trend visualization saved to: {png_file}")
 
     return png_file
+
+def generate_combined_summary_table(moments_results, sigma_results, root_path):
+    """
+    Generate a combined summary CSV table with both sigma and moments PR with waivers.
+
+    Format:
+    - One row per corner-type combination
+    - Columns: Corner, Type, then for each parameter (Early_Sigma, Late_Sigma, Meanshift, Std, Skew):
+      * {Param}_Base_PR, {Param}_W1_PR, {Param}_Opt_PR
+
+    Args:
+        moments_results: Dictionary with moments waiver results
+        sigma_results: Dictionary with sigma PR table results
+        root_path: Output directory path
+
+    Returns:
+        Path to the generated CSV file
+    """
+    logging.info("Generating combined sigma+moments summary table")
+
+    def extract_corner_from_filename(file_name):
+        """Extract corner name from filename"""
+        import re
+        corner_pattern = r'(ssg[ng][pg]_[0-9]p[0-9]+v_[mn][0-9]+c)'
+        match = re.search(corner_pattern, file_name)
+        if match:
+            return match.group(1)
+        # Fallback
+        base_name = file_name.replace('.rpt', '').replace('MC_', '').replace('fmc_', '')
+        return base_name.split('_')[0] if base_name else 'unknown'
+
+    # Organize data by corner and type
+    combined_data = {}  # {(corner, type): {param: {base_pr, pr_waiver1, pr_opt_after_w1}}}
+
+    # Add moments data
+    for (file_name, type_name), param_data in moments_results.items():
+        corner = extract_corner_from_filename(file_name)
+        key = (corner, type_name)
+
+        if key not in combined_data:
+            combined_data[key] = {}
+
+        for param in ['Meanshift', 'Std', 'Skew']:
+            if param in param_data:
+                stats = param_data[param]
+                combined_data[key][param] = {
+                    'base_pr': stats['base_pr'],
+                    'pr_waiver1': stats['pr_with_waiver1'],
+                    'pr_opt_after_w1': stats['pr_optimistic_after_waiver1']
+                }
+
+    # Add sigma data from the parsed sigma table
+    for key, pr_value in sigma_results.items():
+        if len(key) == 4:  # (corner, type, metric, param)
+            corner, type_name, metric, param = key
+
+            combo_key = (corner, type_name)
+
+            if combo_key not in combined_data:
+                combined_data[combo_key] = {}
+
+            if param not in combined_data[combo_key]:
+                combined_data[combo_key][param] = {}
+
+            # Map metric names
+            metric_map = {
+                'base_pr': 'base_pr',
+                'pr_with_waiver1': 'pr_waiver1',
+                'pr_opt_after_w1': 'pr_opt_after_w1'
+            }
+
+            if metric in metric_map:
+                combined_data[combo_key][param][metric_map[metric]] = pr_value
+
+    if not combined_data:
+        logging.warning("No combined data available for summary table")
+        return None
+
+    # Define all parameters in order
+    all_params = ['Early_Sigma', 'Late_Sigma', 'Meanshift', 'Std', 'Skew']
+
+    # Build CSV content - grouped by waiver stages
+    csv_lines = []
+
+    # Header row: Corner, Type, then all Base_PR, then all W1, then all Opt
+    header = ['Corner', 'Type']
+
+    # Add Base_PR columns for all parameters
+    for param in all_params:
+        header.append(f'{param}_Base_PR')
+
+    # Add Waiver1 columns for all parameters
+    for param in all_params:
+        header.append(f'{param}_Waiver1_PR')
+
+    # Add Waiver2 (Opt) columns for all parameters
+    for param in all_params:
+        header.append(f'{param}_Waiver2_PR')
+
+    csv_lines.append(','.join(header))
+
+    # Data rows - sort by type then corner
+    sorted_keys = sorted(combined_data.keys(), key=lambda x: (x[1], x[0]))
+
+    for (corner, type_name) in sorted_keys:
+        row = [corner, type_name]
+
+        # Add all Base_PR values
+        for param in all_params:
+            if param in combined_data[(corner, type_name)]:
+                base_pr = combined_data[(corner, type_name)][param].get('base_pr', None)
+                row.append(f'{base_pr:.2f}' if base_pr is not None else 'N/A')
+            else:
+                row.append('N/A')
+
+        # Add all Waiver1 values
+        for param in all_params:
+            if param in combined_data[(corner, type_name)]:
+                w1_pr = combined_data[(corner, type_name)][param].get('pr_waiver1', None)
+                row.append(f'{w1_pr:.2f}' if w1_pr is not None else 'N/A')
+            else:
+                row.append('N/A')
+
+        # Add all Waiver2 (Opt) values
+        for param in all_params:
+            if param in combined_data[(corner, type_name)]:
+                opt_pr = combined_data[(corner, type_name)][param].get('pr_opt_after_w1', None)
+                row.append(f'{opt_pr:.2f}' if opt_pr is not None else 'N/A')
+            else:
+                row.append('N/A')
+
+        csv_lines.append(','.join(row))
+
+    # Write to file
+    csv_file = os.path.join(root_path, "combined_sigma_moments_PR_summary.csv")
+
+    with open(csv_file, 'w') as f:
+        f.write('\n'.join(csv_lines))
+
+    logging.info(f"Combined summary table saved to: {csv_file}")
+    logging.info(f"  Total rows: {len(csv_lines) - 1} (excluding header)")
+    logging.info(f"  Parameters included: {', '.join(all_params)}")
+
+    return csv_file
 
 def main():
     # Set up a main log file
@@ -1103,14 +1236,21 @@ def main():
         logging.info(f"Moments waiver summary table saved to: {summary_file}")
         logging.info(f"Moments waiver CSV saved to: {csv_file}")
 
-        # Generate combined sigma+moments visualization
+        # Generate combined sigma+moments outputs
         if sigma_waiver_results:
-            logging.info("Generating combined sigma+moments visualization")
+            logging.info("Generating combined sigma+moments outputs")
+
+            # Combined visualization
             viz_file = generate_combined_pass_rate_visualization(moments_waiver_results, sigma_waiver_results, root_path)
             if viz_file:
                 logging.info(f"Combined visualization saved to: {viz_file}")
+
+            # Combined summary table
+            combined_csv = generate_combined_summary_table(moments_waiver_results, sigma_waiver_results, root_path)
+            if combined_csv:
+                logging.info(f"Combined summary CSV saved to: {combined_csv}")
         else:
-            logging.warning("Sigma results not available - skipping combined visualization")
+            logging.warning("Sigma results not available - skipping combined outputs")
 
         # Print summary to console
         with open(summary_file, 'r') as f:
@@ -1125,10 +1265,12 @@ def main():
         print("   CI enlargement waiver (6%)")
         print("   Optimistic waiver AFTER Waiver1")
         print("   Combined sigma+moments visualization (pivot heatmap)")
+        print("   Combined sigma+moments summary table (CSV)")
         print("   ORIGINAL PASS/FAIL LOGIC PRESERVED")
         print("="*50)
         if sigma_waiver_results:
             print(f"Combined visualization: combined_sigma_moments_visualization.png")
+            print(f"Combined summary CSV: combined_sigma_moments_PR_summary.csv")
             print("="*50)
     else:
         logging.warning("Could not generate moments waiver summary table - no valid results")
@@ -1139,6 +1281,7 @@ def main():
     logging.info("  - moments_PR_table_with_waivers.csv (3 pass rates)")
     logging.info("  - moments_waiver_summary_table.txt (human-readable summary)")
     logging.info("  - combined_sigma_moments_visualization.png (pivot heatmap)")
+    logging.info("  - combined_sigma_moments_PR_summary.csv (combined summary table)")
     logging.info("  - *_moments_check_with_waivers.csv (individual corner/type results)")
     logging.info("")
     logging.info("IMPORTANT NOTES:")
